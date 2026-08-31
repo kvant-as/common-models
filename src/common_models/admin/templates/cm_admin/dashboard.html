@@ -1,0 +1,40 @@
+{% extends "cm_admin/base.html" %}
+{% block title %}{{ site.brand }} · Обзор{% endblock %}
+
+{% block content %}
+  <h1 class="cm-h1">Здравствуйте, {{ greeting }}</h1>
+
+  {% if cards %}
+    <div class="cm-cards">
+      {% for card in cards %}
+        <a class="cm-card" href="{{ url_for('cm_admin.list_view', key=card.key) }}">
+          <div class="cm-card-value">{{ card.value }}</div>
+          <div class="cm-card-label">{{ card.label }}</div>
+        </a>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% if recent_ma %}
+    <div class="cm-section-head">
+      <h2 class="cm-h2">Последние записи</h2>
+      <a class="cm-link" href="{{ url_for('cm_admin.list_view', key=recent_ma.key) }}">
+        Все ({{ recent_ma.name|lower }}) →
+      </a>
+    </div>
+    <div class="cm-rows">
+      {% for row in recent_rows %}
+        <a class="cm-row" href="{{ url_for('cm_admin.edit_view', key=recent_ma.key, pk=recent_ma.pk(row)) }}">
+          <div class="cm-row-main">
+            <span class="cm-row-title">{{ recent_ma.title(row) }}</span>
+            {% for col in recent_display %}
+              <span class="cm-row-sub">{{ recent_ma.cell(row, col) }}</span>
+            {% endfor %}
+          </div>
+        </a>
+      {% else %}
+        <div class="cm-empty">Пока пусто</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}

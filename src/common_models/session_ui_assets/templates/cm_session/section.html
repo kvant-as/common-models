@@ -1,0 +1,67 @@
+{% set s = cm_session_info() %}
+{% if s %}
+<div class="cm-session" id="cmSessionCard"
+     data-timeout-minutes="{{ s.timeout_minutes }}"
+     data-last-active="{{ s.last_active }}"
+     data-expires-at="{{ s.expires_at }}"
+     data-server-time="{{ s.server_time }}"
+     data-logout-url="{{ s.logout_url }}">
+
+  <div class="cm-session__head">
+    <h3 class="cm-session__title">Сессия</h3>
+    <span class="cm-session__badge">{{ s.role_label }}</span>
+  </div>
+
+  <div class="cm-session__grid">
+    <div class="cm-session__item">
+      <span class="cm-session__label">Устройство</span>
+      <span class="cm-session__value">{{ s.device }}</span>
+    </div>
+    <div class="cm-session__item">
+      <span class="cm-session__label">Срок бездействия</span>
+      <span class="cm-session__value">
+        {% if s.timeout_minutes % 60 == 0 %}{{ s.timeout_minutes // 60 }} ч.{% else %}{{ s.timeout_minutes }} мин.{% endif %}
+      </span>
+    </div>
+    <div class="cm-session__item">
+      <span class="cm-session__label">IP-адрес</span>
+      <span class="cm-session__value">{{ s.ip or '—' }}</span>
+    </div>
+  </div>
+
+  <div class="cm-session__timer">
+    <div class="cm-session__timer-head">
+      <span>До завершения сеанса</span>
+      <span class="cm-session__timer-value" id="cmSessionTimerValue">--:--</span>
+    </div>
+    <div class="cm-session__track">
+      <div class="cm-session__fill" id="cmSessionTimerFill"></div>
+    </div>
+    <p class="cm-session__hint">Таймер продлевается автоматически при любой активности в системе.</p>
+  </div>
+</div>
+
+<style>
+  .cm-session {
+    border: 1px solid #e6e8ec; border-radius: 12px; padding: 20px 22px;
+    background: #fff; color: #14181f;
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  .cm-session__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .cm-session__title { margin: 0; font-size: 16px; font-weight: 600; }
+  .cm-session__badge {
+    font-size: 11px; letter-spacing: .5px; text-transform: uppercase;
+    padding: 3px 9px; border-radius: 999px; background: #eef2f6; color: #55606c;
+  }
+  .cm-session__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; margin-bottom: 18px; }
+  .cm-session__label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: #8a929c; }
+  .cm-session__value { display: block; margin-top: 3px; font-weight: 500; }
+  .cm-session__timer-head { display: flex; justify-content: space-between; font-size: 13px; color: #55606c; margin-bottom: 8px; }
+  .cm-session__timer-value { font-variant-numeric: tabular-nums; font-weight: 600; color: #14181f; }
+  .cm-session__track { height: 6px; border-radius: 999px; background: #eef2f6; overflow: hidden; }
+  .cm-session__fill { height: 100%; width: 100%; border-radius: 999px; background: #1c7a3e; transition: width 1s linear, background .3s; }
+  .cm-session--warning .cm-session__fill { background: #c98a00; }
+  .cm-session--danger .cm-session__fill { background: #c0392b; }
+  .cm-session__hint { margin: 10px 0 0; font-size: 12px; color: #8a929c; }
+</style>
+{% endif %}

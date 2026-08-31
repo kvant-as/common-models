@@ -1,0 +1,64 @@
+{% extends "cm_admin/base.html" %}
+{% block title %}{{ site.brand }} · {{ ma.name }}{% endblock %}
+
+{% block content %}
+  <div class="cm-section-head">
+    <h1 class="cm-h1">{{ ma.name }}</h1>
+    {% if ma.can_create %}
+      <a class="cm-btn" href="{{ url_for('cm_admin.create_view', key=ma.key) }}">+ Новый</a>
+    {% endif %}
+  </div>
+
+  {% if ma.search %}
+    <form class="cm-search" method="get">
+      <input type="text" name="q" value="{{ term }}" placeholder="Поиск…" autocomplete="off">
+      {% if term %}<a class="cm-link" href="{{ url_for('cm_admin.list_view', key=ma.key) }}">сброс</a>{% endif %}
+    </form>
+  {% endif %}
+
+  <div class="cm-rows">
+    {% for row in rows %}
+      <div class="cm-row">
+        <div class="cm-row-main">
+          <span class="cm-row-title">{{ ma.title(row) }}</span>
+          {% for name in ma.list_badges %}
+            {% if row|attr(name) %}<span class="cm-badge">{{ name }}</span>{% endif %}
+          {% endfor %}
+          <span class="cm-row-cells">
+            {% for name in ma.list_display %}
+              <span class="cm-cell"><i>{{ name }}:</i> {{ ma.cell(row, name) }}</span>
+            {% endfor %}
+          </span>
+        </div>
+        <div class="cm-row-actions">
+          {% if ma.can_edit %}
+            <a class="cm-link" href="{{ url_for('cm_admin.edit_view', key=ma.key, pk=ma.pk(row)) }}">Изменить</a>
+          {% endif %}
+          {% if ma.can_delete %}
+            <form method="post" action="{{ url_for('cm_admin.delete_view', key=ma.key, pk=ma.pk(row)) }}"
+                  onsubmit="return confirm('Удалить запись?');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
+              <button type="submit" class="cm-link cm-link--danger">Удалить</button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    {% else %}
+      <div class="cm-empty">Ничего не найдено</div>
+    {% endfor %}
+  </div>
+
+  {% if pages > 1 %}
+    <div class="cm-pager">
+      {% for p in range(1, pages + 1) %}
+        {% if p == page %}
+          <span class="cm-page cm-page--on">{{ p }}</span>
+        {% else %}
+          <a class="cm-page" href="{{ url_for('cm_admin.list_view', key=ma.key, page=p, q=term or none) }}">{{ p }}</a>
+        {% endif %}
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <p class="cm-muted">Всего: {{ total }}</p>
+{% endblock %}

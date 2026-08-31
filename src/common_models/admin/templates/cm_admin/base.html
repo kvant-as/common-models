@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ site.brand }} · Админка{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('cm_admin.static', filename='cm_admin/admin.css') }}">
+</head>
+<body style="--accent: {{ site.accent }}; --accent-2: {{ site.accent_2 }};">
+  <header class="cm-topbar">
+    <a class="cm-brand" href="{{ url_for('cm_admin.dashboard') }}">
+      <span class="cm-brand-mark">{{ site.brand|lower }}</span>
+      <span class="cm-brand-admin">ADMIN</span>
+    </a>
+
+    <nav class="cm-nav">
+      {% for group, items in groups.items() %}
+        <details class="cm-menu">
+          <summary>{{ group }}</summary>
+          <div class="cm-menu-list">
+            {% for ma in items %}
+              <a href="{{ url_for('cm_admin.list_view', key=ma.key) }}">{{ ma.name }}</a>
+            {% endfor %}
+          </div>
+        </details>
+      {% endfor %}
+    </nav>
+
+    <div class="cm-nav-right">
+      {% if site.site_endpoint %}
+        <a href="{{ url_for(site.site_endpoint) }}">На сайт</a>
+      {% endif %}
+      <a href="{{ url_for(site.logout_endpoint) }}">Выйти</a>
+    </div>
+  </header>
+
+  <main class="cm-main">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="cm-flashes">
+          {% for cat, msg in messages %}
+            <div class="cm-flash cm-flash--{{ cat }}">{{ msg }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

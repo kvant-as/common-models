@@ -1,0 +1,47 @@
+.cm-pwmeter {
+  margin-top: 8px;
+  font: 12px/1.4 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+.cm-pwmeter__track {
+  display: flex;
+  gap: 4px;
+  height: 4px;
+  margin-bottom: 5px;
+}
+.cm-pwmeter__seg {
+  flex: 1;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.12);
+  transition: background 0.2s ease;
+}
+.cm-pwmeter__seg.is-on {
+  background: var(--cm-pw-color, #c0392b);
+}
+.cm-pwmeter__label {
+  color: #8a929c;
+}
+.cm-pwmeter__label b {
+  color: var(--cm-pw-color, #8a929c);
+  font-weight: 600;
+}
+
+/* confirm-password match indicator — same look, single bar */
+.cm-pwmatch {
+  margin-top: 8px;
+  font: 12px/1.4 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+.cm-pwmatch__bar {
+  height: 4px;
+  border-radius: 2px;
+  margin-bottom: 5px;
+  background: rgba(0, 0, 0, 0.12);
+  transition: background 0.2s ease;
+}
+.cm-pwmatch__label {
+  color: #8a929c;
+  font-weight: 600;
+}
+.cm-pwmatch.is-ok .cm-pwmatch__bar { background: #1c7a3e; }
+.cm-pwmatch.is-ok .cm-pwmatch__label { color: #1c7a3e; }
+.cm-pwmatch.is-bad .cm-pwmatch__bar { background: #c0392b; }
+.cm-pwmatch.is-bad .cm-pwmatch__label { color: #c0392b; }

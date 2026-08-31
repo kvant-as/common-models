@@ -1,0 +1,63 @@
+{% extends "cm_admin/base.html" %}
+{% block title %}{{ site.brand }} · {{ ma.name }}{% endblock %}
+
+{% block content %}
+  <div class="cm-section-head">
+    <h1 class="cm-h1">{{ "Новая запись" if creating else "Изменить" }} · {{ ma.name }}</h1>
+    <a class="cm-link" href="{{ url_for('cm_admin.list_view', key=ma.key) }}">← к списку</a>
+  </div>
+
+  {% if form_error %}<div class="cm-flash cm-flash--error">{{ form_error }}</div>{% endif %}
+
+  <form class="cm-form" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
+
+    {% for fv in field_views %}
+      {% set f = fv.spec %}
+      <div class="cm-field {% if fv.error %}cm-field--err{% endif %}">
+        <label for="f_{{ f.name }}">{{ f.label }}{% if f.required %} *{% endif %}</label>
+
+        {% if f.type == "bool" %}
+          <input type="checkbox" id="f_{{ f.name }}" name="{{ f.name }}" {{ "checked" if fv.value }}>
+
+        {% elif f.type == "text" %}
+          <textarea id="f_{{ f.name }}" name="{{ f.name }}" rows="{{ f.rows }}">{{ fv.value or "" }}</textarea>
+
+        {% elif f.type in ("select", "fk") %}
+          <select id="f_{{ f.name }}" name="{{ f.name }}">
+            {% if f.blank %}<option value="">—</option>{% endif %}
+            {% for val, label in fv.options %}
+              <option value="{{ val }}" {{ "selected" if fv.value is not none and fv.value|string == val|string }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+
+        {% elif f.type == "file" %}
+          {% if fv.value %}<div class="cm-file-current">Текущий: {{ fv.value }}</div>{% endif %}
+          <input type="file" id="f_{{ f.name }}" name="{{ f.name }}" {% if f.accept %}accept="{{ f.accept }}"{% endif %}>
+
+        {% elif f.type == "date" %}
+          <input type="date" id="f_{{ f.name }}" name="{{ f.name }}"
+                 value="{{ fv.value.strftime('%Y-%m-%d') if fv.value else '' }}">
+
+        {% elif f.type == "datetime" %}
+          <input type="datetime-local" id="f_{{ f.name }}" name="{{ f.name }}"
+                 value="{{ fv.value.strftime('%Y-%m-%dT%H:%M') if fv.value else '' }}">
+
+        {% else %}
+          <input type="{{ 'email' if f.type == 'email' else 'password' if f.type == 'password' else 'number' if f.type in ('int','float') else 'text' }}"
+                 {% if f.type == 'float' %}step="any"{% endif %}
+                 id="f_{{ f.name }}" name="{{ f.name }}"
+                 value="{{ '' if f.type == 'password' else (fv.value if fv.value is not none else '') }}">
+        {% endif %}
+
+        {% if f.help %}<div class="cm-help">{{ f.help }}</div>{% endif %}
+        {% if fv.error %}<div class="cm-help cm-help--err">{{ fv.error }}</div>{% endif %}
+      </div>
+    {% endfor %}
+
+    <div class="cm-form-actions">
+      <button type="submit" class="cm-btn">Сохранить</button>
+      <a class="cm-link" href="{{ url_for('cm_admin.list_view', key=ma.key) }}">Отмена</a>
+    </div>
+  </form>
+{% endblock %}
