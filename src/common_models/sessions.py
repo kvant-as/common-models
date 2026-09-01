@@ -16,6 +16,7 @@ Key                            Default                                    Meanin
 ``SESSION_PRIVILEGED_ATTRS``   ``('is_admin', 'is_auditor',
                                   'is_approver', 'is_reader')``           User flags granting the long timeout.
 ``SESSION_LOGIN_ENDPOINT``     ``views.login``                            Endpoint to redirect to on logout.
+``SESSION_LOGOUT_ENDPOINT``    ``auth.logout``                            Logout endpoint (skipped by the idle guard).
 ``SESSION_DEFAULT_REDIRECT``   ``views.profile``                          Default target of ``create_login_response``.
 ``SESSION_ENFORCE_IN_DEBUG``   ``False``                                 Keep enforcing the timeout when ``app.debug``.
 ``APP_NAME``                   --                                        Passed to ``touch_user_activity``.
@@ -51,9 +52,13 @@ __all__ = [
     "get_or_refresh_session",
     "force_logout",
     "session_required",
+    "enforce_idle_timeout",
     "get_current_user",
     "clear_session_cookie",
 ]
+
+# how often the global guard rewrites user.last_active for an active user
+_SLIDING_WRITE_INTERVAL = timedelta(seconds=60)
 
 JWT_ALGORITHM = "HS256"
 SESSION_DURATION = timedelta(days=7)  # JWT lifetime, distinct from the idle timeout
@@ -298,6 +303,62 @@ def session_required(view_func):
         return response
 
     return wrapper
+
+
+def _stamp_last_active(user, now):
+    try:
+        user.last_active = now
+        db.session.commit()
+    except Exception:                                   # noqa: BLE001
+        db.session.rollback()
+
+
+def enforce_idle_timeout(app):
+    """Global backstop against a stale session.
+
+    Registers a ``before_request`` hook that, for every authenticated user and
+    on every page (not just ``@session_required`` ones), compares the user's
+    ``last_active`` column in the database against the idle timeout allowed for
+    their role (:func:`get_user_session_timeout`). If it is exceeded the user
+    is logged out — this catches the case where the browser still holds a
+    valid session/remember cookie but the person has been away far longer than
+    the session should live. Otherwise ``last_active`` is refreshed (throttled)
+    so any real request counts as activity (a sliding window).
+    """
+    from flask_login import logout_user
+
+    @app.before_request
+    def _cm_idle_guard():
+        if request.method == "OPTIONS":
+            return None
+
+        endpoint = request.endpoint
+        if not endpoint or endpoint.rsplit(".", 1)[-1] == "static":
+            return None
+
+        login_ep = _cfg("SESSION_LOGIN_ENDPOINT", "views.login")
+        logout_ep = _cfg("SESSION_LOGOUT_ENDPOINT", "auth.logout")
+        if endpoint in (login_ep, logout_ep):
+            return None
+
+        if not current_user.is_authenticated:
+            return None
+
+        user = current_user._get_current_object()
+        now = _naive(current_utc_time())
+        last = _naive(getattr(user, "last_active", None))
+
+        if last is None:
+            _stamp_last_active(user, now)
+            return None
+
+        if now - last > get_user_session_timeout(user):
+            logout_user()
+            return force_logout()
+
+        if now - last >= _SLIDING_WRITE_INTERVAL:
+            _stamp_last_active(user, now)
+        return None
 
 
 def get_current_user():

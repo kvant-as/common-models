@@ -11,7 +11,7 @@ db = SQLAlchemy()
 class User(db.Model, UserMixin):
     __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True)
-    
+
     type = db.Column(db.String(13), default='Респондент')
     is_admin = db.Column(db.Boolean, default=False, server_default='false')
     is_auditor = db.Column(db.Boolean, default=False, server_default='false')

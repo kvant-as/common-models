@@ -16,7 +16,7 @@ html, body { margin: 0; }
 body {
   background: var(--bg);
   color: var(--ink);
-  font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font: 14px/1.5 "Montserrat", -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
 }
 a { color: inherit; text-decoration: none; }
 
