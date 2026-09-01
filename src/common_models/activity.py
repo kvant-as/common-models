@@ -20,7 +20,7 @@ from .models import db, UserAppActivity
 from .timeutils import current_utc_time
 from .logs import get_logger
 
-__all__ = ["touch_user_activity", "get_app_last_active"]
+__all__ = ["touch_user_activity", "get_app_last_active", "count_online"]
 
 
 def touch_user_activity(user_id, app, throttle_seconds=60):
@@ -73,3 +73,20 @@ def get_app_last_active(user_id, app):
     except Exception:
         get_logger().warning("get_app_last_active failed", exc_info=True)
         return None
+
+
+def count_online(app, within_minutes=5):
+    """Distinct users active in ``app`` within the last ``within_minutes``."""
+    if not app:
+        return 0
+    try:
+        since = current_utc_time() - timedelta(minutes=within_minutes)
+        return (
+            db.session.query(UserAppActivity.user_id)
+            .filter(UserAppActivity.app == app, UserAppActivity.last_active >= since)
+            .distinct()
+            .count()
+        )
+    except Exception:
+        get_logger().warning("count_online failed", exc_info=True)
+        return 0

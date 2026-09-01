@@ -1,7 +1,7 @@
 """Custom admin engine: declarative model registration + generic CRUD routes."""
 
 import os
-import uuid
+import re
 from datetime import date, datetime
 
 from flask import (
@@ -56,11 +56,16 @@ class Field:
             file = files.get(self.name)
             if not file or not file.filename:
                 return _MISSING
-            fname = f"{uuid.uuid4().hex[:12]}_{secure_filename(file.filename)}"
             dest_dir = os.path.join(current_app.root_path, self.upload_to or "static/uploads")
             os.makedirs(dest_dir, exist_ok=True)
+            fname = _safe_upload_name(file.filename)
+            root, ext = os.path.splitext(fname)
+            i = 1
+            while os.path.exists(os.path.join(dest_dir, fname)):
+                fname = f"{root}-{i}{ext}"
+                i += 1
             file.save(os.path.join(dest_dir, fname))
-            return fname
+            return fname                     # stored verbatim in the model column
 
         raw = (form.get(self.name) or "").strip()
         if raw == "":
@@ -195,8 +200,7 @@ class AdminSite:
         self._dash = {
             "greeting_attr": None,
             "stats": [],
-            "recent_key": None,
-            "recent_display": [],
+            "online_count": None,      # optional callable -> int
         }
 
     # -- public API ------------------------------------------------------- #
@@ -205,12 +209,14 @@ class AdminSite:
         self._models[ma.key] = ma
         return ma
 
-    def dashboard(self, greeting_attr=None, stats=(), recent=None, recent_display=()):
+    def dashboard(self, greeting_attr=None, stats=(), online_count=None):
+        """Configure the admin home page: a greeting, a row of count cards for
+        the given registered model keys, and (optionally) a live "online now"
+        number from ``online_count()``."""
         self._dash.update(
             greeting_attr=greeting_attr,
             stats=list(stats),
-            recent_key=recent,
-            recent_display=list(recent_display),
+            online_count=online_count,
         )
 
     def init_app(self, app):
@@ -268,11 +274,13 @@ def dashboard():
         if ma:
             cards.append({"label": ma.stat_label or ma.name, "value": ma.count(), "key": key})
 
-    recent_rows, recent_ma = [], None
-    if dash["recent_key"]:
-        recent_ma = site._models.get(dash["recent_key"])
-        if recent_ma:
-            recent_rows = recent_ma.base_query().limit(8).all()
+    online = None
+    fn = dash.get("online_count")
+    if callable(fn):
+        try:
+            online = int(fn())
+        except Exception:                              # noqa: BLE001
+            online = None
 
     greeting = None
     if dash["greeting_attr"]:
@@ -281,9 +289,7 @@ def dashboard():
 
     return render_template(
         "cm_admin/dashboard.html",
-        cards=cards, greeting=greeting,
-        recent_rows=recent_rows, recent_ma=recent_ma,
-        recent_display=dash["recent_display"],
+        cards=cards, greeting=greeting, online=online,
         **site.nav_context(),
     )
 
@@ -399,6 +405,40 @@ def _slug(name):
             out.append("-")
         out.append(ch.lower())
     return "".join(out).strip("-")
+
+
+_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "",
+    "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def _translit(text):
+    out = []
+    for ch in text or "":
+        rep = _TRANSLIT.get(ch.lower())
+        if rep is None:
+            out.append(ch)
+        elif ch.isupper() and rep:
+            out.append(rep[0].upper() + rep[1:])
+        else:
+            out.append(rep)
+    return "".join(out)
+
+
+def _safe_upload_name(original):
+    """ASCII, filesystem-safe file name derived from ``original`` (transliterating
+    Cyrillic), always keeping a sane extension."""
+    original = original or "file"
+    stem, ext = os.path.splitext(original)
+    ext = "." + re.sub(r"[^A-Za-z0-9]", "", ext).lower()[:12] if ext else ""
+    stem = secure_filename(_translit(stem)).strip("._-")[:80]
+    if not stem:
+        stem = "file-" + os.urandom(4).hex()
+    return stem + ext
 
 
 def _parse_dt(raw, fmt):

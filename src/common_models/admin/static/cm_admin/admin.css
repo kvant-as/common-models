@@ -73,6 +73,12 @@ a { color: inherit; text-decoration: none; }
 }
 .cm-btn:hover { filter: brightness(1.05); }
 
+/* ---------- online now ---------- */
+.cm-online { display: flex; align-items: baseline; gap: 8px; margin: -6px 0 28px; }
+.cm-online-dot { width: 8px; height: 8px; border-radius: 50%; background: #22a565; align-self: center; }
+.cm-online-value { font-size: 22px; font-weight: 600; }
+.cm-online-label { color: var(--muted); }
+
 /* ---------- cards ---------- */
 .cm-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 44px; }
 .cm-card { padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); }

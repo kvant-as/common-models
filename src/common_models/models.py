@@ -116,7 +116,7 @@ class News(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(100))
     text = db.Column(db.String(4000))
-    img_name = db.Column(db.String(20))
+    img_name = db.Column(db.String(255))
     
     is_erespondentn = db.Column(db.Boolean, default=False)
     is_enplans = db.Column(db.Boolean, default=False)
