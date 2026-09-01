@@ -16,7 +16,7 @@ from .models import (
     PlanTicket, Unit, Direction, Event, Indicator, IndicatorUsage,
     StatPlan, StatPlanValue, ChatMessage, Chat,
 )
-from .activity import touch_user_activity
+from .activity import touch_user_activity, get_app_last_active
 
 __all__ = [
     'current_utc_time', 'get_previous_quarter', 'get_report_year',
@@ -32,5 +32,5 @@ __all__ = [
     'PlanTicket', 'Unit', 'Direction', 'Event', 'Indicator', 'IndicatorUsage',
     'StatPlan', 'StatPlanValue', 'ChatMessage', 'Chat',
 
-    'touch_user_activity',
+    'touch_user_activity', 'get_app_last_active',
 ]

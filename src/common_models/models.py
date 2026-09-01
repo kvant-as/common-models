@@ -29,7 +29,7 @@ class User(db.Model, UserMixin):
     
     password = db.Column(db.String())
     begin_time = db.Column(db.DateTime, default=current_utc_time)  # дата создания аккаунта
-    last_active = db.Column(db.DateTime)  # последняя активность (в любом приложении)
+    # последняя активность теперь хранится по приложениям в UserAppActivity.last_active
     reset_password_token = db.Column(db.String(255), nullable=True)
     reset_password_expires = db.Column(db.DateTime, nullable=True)
     

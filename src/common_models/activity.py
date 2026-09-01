@@ -2,29 +2,29 @@
 
 Call :func:`touch_user_activity` on authenticated requests (e.g. from the
 ``session_required`` guard) to record that ``user_id`` was active in ``app``
-right now.  The first call for a pair also stamps ``first_seen``.
-
-Each call also refreshes the global ``user.last_active`` column, so this is the
-single write path for "user was here" — callers no longer touch ``user``
-directly.
+right now.  The first call for a pair also stamps ``first_seen``.  This is the
+single source of truth for "when was the user last here" — there is no global
+``user.last_active`` column any more, activity is stored per application in
+:class:`UserAppActivity`.
 
 Writes are throttled: if the stored ``last_active`` is younger than
 ``throttle_seconds`` the call is a cheap no-op, so it is safe to invoke on
-every request.  Any database error is swallowed and logged — activity
-bookkeeping must never break the request it is attached to.
+every request (pass ``throttle_seconds=0`` to force a write, e.g. on login).
+Any database error is swallowed and logged — activity bookkeeping must never
+break the request it is attached to.
 """
 
 from datetime import timedelta
 
-from .models import db, User, UserAppActivity
+from .models import db, UserAppActivity
 from .timeutils import current_utc_time
 from .logs import get_logger
 
-__all__ = ["touch_user_activity"]
+__all__ = ["touch_user_activity", "get_app_last_active"]
 
 
 def touch_user_activity(user_id, app, throttle_seconds=60):
-    """Upsert ``(user_id, app)`` activity and bump ``user.last_active``.
+    """Upsert ``(user_id, app)`` activity in :class:`UserAppActivity`.
 
     Returns ``True`` if a write happened, ``False`` if throttled or on error.
     """
@@ -50,9 +50,6 @@ def touch_user_activity(user_id, app, throttle_seconds=60):
         else:
             row.last_active = now
 
-        db.session.query(User).filter_by(id=user_id).update(
-            {User.last_active: now}, synchronize_session=False
-        )
         db.session.commit()
         return True
 
@@ -60,3 +57,19 @@ def touch_user_activity(user_id, app, throttle_seconds=60):
         db.session.rollback()
         get_logger().warning("touch_user_activity failed", exc_info=True)
         return False
+
+
+def get_app_last_active(user_id, app):
+    """Return ``UserAppActivity.last_active`` for ``(user_id, app)`` or ``None``."""
+    if not user_id or not app:
+        return None
+    try:
+        row = (
+            db.session.query(UserAppActivity.last_active)
+            .filter_by(user_id=user_id, app=app)
+            .one_or_none()
+        )
+        return row[0] if row else None
+    except Exception:
+        get_logger().warning("get_app_last_active failed", exc_info=True)
+        return None

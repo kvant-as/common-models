@@ -34,7 +34,7 @@ from user_agents import parse
 
 from .models import db, User
 from .timeutils import current_utc_time
-from .activity import touch_user_activity
+from .activity import touch_user_activity, get_app_last_active
 
 __all__ = [
     "JWT_ALGORITHM",
@@ -56,9 +56,6 @@ __all__ = [
     "get_current_user",
     "clear_session_cookie",
 ]
-
-# how often the global guard rewrites user.last_active for an active user
-_SLIDING_WRITE_INTERVAL = timedelta(seconds=60)
 
 JWT_ALGORITHM = "HS256"
 SESSION_DURATION = timedelta(days=7)  # JWT lifetime, distinct from the idle timeout
@@ -305,35 +302,28 @@ def session_required(view_func):
     return wrapper
 
 
-def _stamp_last_active(user, now):
-    try:
-        user.last_active = now
-        db.session.commit()
-    except Exception:                                   # noqa: BLE001
-        db.session.rollback()
-
-
 def enforce_idle_timeout(app):
     """Global backstop against a stale session.
 
     Registers a ``before_request`` hook that, for every authenticated user and
     on every page (not just ``@session_required`` ones), compares the user's
-    ``last_active`` column in the database against the idle timeout allowed for
-    their role (:func:`get_user_session_timeout`). If it is exceeded the user
-    is logged out — this catches the case where the browser still holds a
-    valid session/remember cookie but the person has been away far longer than
-    the session should live. Otherwise ``last_active`` is refreshed (throttled)
-    so any real request counts as activity (a sliding window).
+    last activity **in this app** — ``UserAppActivity.last_active`` for
+    ``(user, APP_NAME)`` — against the idle timeout allowed for their role
+    (:func:`get_user_session_timeout`). If it is exceeded the user is logged
+    out: this catches the case where the browser still holds a valid
+    session/remember cookie but the person has been away far longer than the
+    session should live. Otherwise the activity row is refreshed (throttled)
+    so any real request slides the window.
 
-    Also stamps ``last_active`` on every ``login_user`` (via the
-    ``user_logged_in`` signal) so the guard never trips on the redirect that
-    immediately follows a fresh login.
+    Also stamps activity on every ``login_user`` (via the ``user_logged_in``
+    signal) so the guard never trips on the redirect that immediately follows
+    a fresh login.
     """
     from flask_login import logout_user, user_logged_in
 
     def _on_login(sender, user, **extra):
         if user is not None:
-            _stamp_last_active(user, _naive(current_utc_time()))
+            touch_user_activity(user.id, app.config.get("APP_NAME"), throttle_seconds=0)
 
     # keep a strong ref so blinker's weak connection is not garbage-collected
     app.extensions.setdefault("cm_session_hooks", {})["on_login"] = _on_login
@@ -348,7 +338,7 @@ def enforce_idle_timeout(app):
         if not endpoint:
             return None
         # never touch static, or any auth entry/exit page — logging in must
-        # always be possible even when the stored last_active is ancient.
+        # always be possible even when the stored activity is ancient.
         if endpoint.rsplit(".", 1)[-1] in ("static", "login", "logout", "sign"):
             return None
         if endpoint in (
@@ -360,12 +350,16 @@ def enforce_idle_timeout(app):
         if not current_user.is_authenticated:
             return None
 
+        app_name = _cfg("APP_NAME", None)
+        if not app_name:
+            return None  # cannot scope activity to an app — nothing to enforce
+
         user = current_user._get_current_object()
         now = _naive(current_utc_time())
-        last = _naive(getattr(user, "last_active", None))
+        last = _naive(get_app_last_active(user.id, app_name))
 
         if last is None:
-            _stamp_last_active(user, now)
+            touch_user_activity(user.id, app_name, throttle_seconds=0)
             return None
 
         enforce_raw = _cfg("SESSION_ENFORCE_IN_DEBUG", False)
@@ -379,8 +373,7 @@ def enforce_idle_timeout(app):
             logout_user()
             return force_logout()
 
-        if now - last >= _SLIDING_WRITE_INTERVAL:
-            _stamp_last_active(user, now)
+        touch_user_activity(user.id, app_name)  # throttled slide of the window
         return None
 
 
