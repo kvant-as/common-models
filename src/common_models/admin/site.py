@@ -204,6 +204,7 @@ class AdminSite:
             "greeting_attr": None,
             "stats": [],
             "online_count": None,      # optional callable -> int
+            "actions": [],             # list of {label, endpoint|url, method, confirm}
         }
 
     # -- public API ------------------------------------------------------- #
@@ -212,11 +213,14 @@ class AdminSite:
         self._models[ma.key] = ma
         return ma
 
-    def dashboard(self, greeting_attr=None, stats=(), online_count=None):
+    def dashboard(self, greeting_attr=None, stats=(), online_count=None, actions=()):
         """Configure the admin home page: a greeting, a row of count cards for
-        the given registered model keys, and (optionally) a live "online now"
-        number from ``online_count()``."""
+        the given registered model keys, an optional live "online now" number
+        from ``online_count()``, and an optional list of one-click ``actions``
+        — each ``{"label", "endpoint"|"url", "method"="post", "confirm"=None}`` —
+        rendered as buttons that POST via fetch and show the JSON ``message``."""
         self._dash.update(
+            actions=[dict(a) for a in actions],
             greeting_attr=greeting_attr,
             stats=list(stats),
             online_count=online_count,
@@ -290,9 +294,22 @@ def dashboard():
         greeting = getattr(current_user, dash["greeting_attr"], None)
     greeting = greeting or getattr(current_user, "first_name", None) or getattr(current_user, "email", "")
 
+    actions = []
+    for a in dash.get("actions", []):
+        try:
+            url = a.get("url") or url_for(a["endpoint"])
+        except Exception:                              # noqa: BLE001
+            continue
+        actions.append({
+            "label": a.get("label", "Действие"),
+            "url": url,
+            "method": (a.get("method") or "post").upper(),
+            "confirm": a.get("confirm"),
+        })
+
     return render_template(
         "cm_admin/dashboard.html",
-        cards=cards, greeting=greeting, online=online,
+        cards=cards, greeting=greeting, online=online, actions=actions,
         **site.nav_context(),
     )
 

@@ -73,6 +73,16 @@ a { color: inherit; text-decoration: none; }
 }
 .cm-btn:hover { filter: brightness(1.05); }
 
+/* ---------- dashboard actions ---------- */
+.cm-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.cm-action[disabled] { opacity: .6; cursor: default; }
+.cm-action-status {
+  margin: 4px 0 32px; padding: 10px 14px; border-radius: 8px;
+  font-size: 13px; border: 1px solid var(--line);
+}
+.cm-action-status.is-ok { border-color: #cce8d4; background: #f0faf3; color: #1c7a3e; }
+.cm-action-status.is-bad { border-color: #f0c8c2; background: #fdf1ef; color: var(--danger); }
+
 /* ---------- online now ---------- */
 .cm-online { display: flex; align-items: baseline; gap: 8px; margin: -6px 0 28px; }
 .cm-online-dot { width: 8px; height: 8px; border-radius: 50%; background: #22a565; align-self: center; }

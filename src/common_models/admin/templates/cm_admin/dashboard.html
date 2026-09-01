@@ -22,4 +22,53 @@
       {% endfor %}
     </div>
   {% endif %}
+
+  {% if actions %}
+    <h2 class="cm-h2" style="margin-bottom: 14px;">Действия</h2>
+    <div class="cm-actions">
+      {% for a in actions %}
+        <button type="button" class="cm-btn cm-action"
+                data-url="{{ a.url }}" data-method="{{ a.method }}"
+                {% if a.confirm %}data-confirm="{{ a.confirm }}"{% endif %}>
+          {{ a.label }}
+        </button>
+      {% endfor %}
+    </div>
+    <div id="cmActionStatus" class="cm-action-status" hidden></div>
+
+    <script>
+      (function () {
+        var status = document.getElementById("cmActionStatus");
+        function show(msg, ok) {
+          status.hidden = false;
+          status.textContent = msg;
+          status.className = "cm-action-status " + (ok ? "is-ok" : "is-bad");
+        }
+        document.querySelectorAll(".cm-action").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            if (btn.dataset.confirm && !window.confirm(btn.dataset.confirm)) return;
+            var orig = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = "…";
+            show("Выполняется…", true);
+            fetch(btn.dataset.url, {
+              method: btn.dataset.method || "POST",
+              credentials: "same-origin",
+              headers: { "X-Requested-With": "XMLHttpRequest" },
+            })
+              .then(function (r) {
+                return r.json().catch(function () { return { success: r.ok }; })
+                  .then(function (d) { return { ok: r.ok, d: d }; });
+              })
+              .then(function (res) {
+                var d = res.d || {};
+                show(d.message || (res.ok ? "Готово" : "Ошибка"), res.ok && d.success !== false);
+              })
+              .catch(function () { show("Не удалось выполнить запрос", false); })
+              .finally(function () { btn.disabled = false; btn.textContent = orig; });
+          });
+        });
+      })();
+    </script>
+  {% endif %}
 {% endblock %}
