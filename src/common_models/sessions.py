@@ -324,8 +324,20 @@ def enforce_idle_timeout(app):
     valid session/remember cookie but the person has been away far longer than
     the session should live. Otherwise ``last_active`` is refreshed (throttled)
     so any real request counts as activity (a sliding window).
+
+    Also stamps ``last_active`` on every ``login_user`` (via the
+    ``user_logged_in`` signal) so the guard never trips on the redirect that
+    immediately follows a fresh login.
     """
-    from flask_login import logout_user
+    from flask_login import logout_user, user_logged_in
+
+    def _on_login(sender, user, **extra):
+        if user is not None:
+            _stamp_last_active(user, _naive(current_utc_time()))
+
+    # keep a strong ref so blinker's weak connection is not garbage-collected
+    app.extensions.setdefault("cm_session_hooks", {})["on_login"] = _on_login
+    user_logged_in.connect(_on_login, app)
 
     @app.before_request
     def _cm_idle_guard():
@@ -352,7 +364,14 @@ def enforce_idle_timeout(app):
             _stamp_last_active(user, now)
             return None
 
-        if now - last > get_user_session_timeout(user):
+        enforce_raw = _cfg("SESSION_ENFORCE_IN_DEBUG", False)
+        enforce_in_debug = (
+            enforce_raw if isinstance(enforce_raw, bool)
+            else str(enforce_raw).lower() in {"1", "true", "yes", "on"}
+        )
+        enforcing = enforce_in_debug or not current_app.debug
+
+        if enforcing and now - last > get_user_session_timeout(user):
             logout_user()
             return force_logout()
 
