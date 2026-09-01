@@ -1,40 +1,58 @@
-"""Shared idle-session tracking for kvant-as Flask apps.
+"""Shared session / idle-timeout handling for the kvant-as apps.
 
-A short-lived JWT cookie carries ``last_active`` / ``created_at`` claims; the
-:func:`session_required` guard refreshes it on every request and logs the user
-out once the idle timeout is exceeded.  Persistent activity is written to the
-``user_app_activity`` table via :func:`common_models.touch_user_activity`.
+Model
+-----
+* A **JWT cookie** (``SESSION_TOKEN_COOKIE``) binds the browser to a login.
+  It only carries ``user_id`` / ``session_id`` / ``created_at`` / ``exp`` and
+  lives for ``SESSION_DURATION`` (a hard 7-day cap). It is *not* where the
+  idle timeout lives.
+* The **idle timeout** is driven entirely by ``UserAppActivity.last_active``
+  for ``(user, APP_NAME)`` compared against the role's allowed idle time
+  (:func:`get_user_session_timeout`). One source of truth, per application.
+* :func:`enforce_idle_timeout` installs a single ``before_request`` guard that
+  logs the user out once that window is exceeded — on every page, not just
+  ``@session_required`` ones. It also slides the window, but **only for real
+  user activity**: a page navigation or a normal server call. Requests under
+  ``SESSION_ACTIVITY_IGNORE_PREFIXES`` (``/api`` data loads, the session/forms
+  helper endpoints) and pure client-side things like scrolling never extend
+  the session.
 
-Behaviour is tuned per app through ``app.config``:
-
-=============================  =========================================  ==============================
-Key                            Default                                    Meaning
-=============================  =========================================  ==============================
-``SESSION_TOKEN_COOKIE``       ``session_token``                          Cookie name for the idle token.
-``SESSION_TIMEOUT_PRIVILEGED`` ``timedelta(hours=9)``                     Idle timeout for privileged users.
-``SESSION_TIMEOUT_DEFAULT``    ``timedelta(minutes=60)``                  Idle timeout for everyone else.
-``SESSION_PRIVILEGED_ATTRS``   ``('is_admin', 'is_auditor',
-                                  'is_approver', 'is_reader')``           User flags granting the long timeout.
-``SESSION_LOGIN_ENDPOINT``     ``views.login``                            Endpoint to redirect to on logout.
-``SESSION_LOGOUT_ENDPOINT``    ``auth.logout``                            Logout endpoint (skipped by the idle guard).
-``SESSION_DEFAULT_REDIRECT``   ``views.profile``                          Default target of ``create_login_response``.
-``SESSION_ENFORCE_IN_DEBUG``   ``False``                                 Keep enforcing the timeout when ``app.debug``.
-``APP_NAME``                   --                                        Passed to ``touch_user_activity``.
-=============================  =========================================  ==============================
+Config (``app.config``)
+-----------------------
+==================================  =====================================  =========================================
+Key                                 Default                                Meaning
+==================================  =====================================  =========================================
+``APP_NAME``                         --                                     Scopes activity to this app (required).
+``SESSION_TOKEN_COOKIE``             ``session_token``                      Idle-token cookie name.
+``SESSION_TOKEN_COOKIE_SECURE``      ``False``                              Set ``True`` in production (HTTPS).
+``SESSION_TIMEOUT_PRIVILEGED``       ``timedelta(hours=9)``                 Idle window for privileged users.
+``SESSION_TIMEOUT_DEFAULT``          ``timedelta(minutes=60)``              Idle window for everyone else.
+``SESSION_PRIVILEGED_ATTRS``         ``('is_admin','is_auditor',
+                                       'is_approver','is_reader')``         User flags that grant the long window.
+``SESSION_ACTIVITY_IGNORE_PREFIXES`` ``('/api','/_session','/_forms')``     Path prefixes that do NOT slide the window.
+``SESSION_ACTIVITY_WRITE_INTERVAL``  ``45``                                 Min seconds between activity-row writes.
+``SESSION_LOGIN_ENDPOINT``           ``views.login``                        Where to send a logged-out user.
+``SESSION_LOGOUT_ENDPOINT``          ``auth.logout``                        Logout endpoint (never guarded).
+``SESSION_DEFAULT_REDIRECT``         ``views.profile``                      Default target of ``create_login_response``.
+``SESSION_ENFORCE_IN_DEBUG``         ``False``                              Keep enforcing the timeout under ``app.debug``.
+==================================  =====================================  =========================================
 """
 
+import time
 import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 
 import jwt
-from flask import request, redirect, url_for, flash, make_response, current_app
+from flask import (
+    current_app, flash, jsonify, make_response, redirect, request, url_for,
+)
 from flask_login import current_user
 from user_agents import parse
 
-from .models import db, User
+from .activity import get_app_last_active, touch_user_activity
+from .models import User
 from .timeutils import current_utc_time
-from .activity import touch_user_activity, get_app_last_active
 
 __all__ = [
     "JWT_ALGORITHM",
@@ -58,10 +76,15 @@ __all__ = [
 ]
 
 JWT_ALGORITHM = "HS256"
-SESSION_DURATION = timedelta(days=7)  # JWT lifetime, distinct from the idle timeout
-
+SESSION_DURATION = timedelta(days=7)          # hard cap on the JWT cookie
+_TOKEN_RENEW_WITHIN = timedelta(days=1)       # re-issue the cookie when this close to exp
 _DEFAULT_PRIVILEGED_ATTRS = ("is_admin", "is_auditor", "is_approver", "is_reader")
+_DEFAULT_IGNORE_PREFIXES = ("/api", "/_session", "/_forms")
 
+
+# --------------------------------------------------------------------------- #
+#  small helpers
+# --------------------------------------------------------------------------- #
 
 def _cfg(key, default):
     return current_app.config.get(key, default)
@@ -71,11 +94,12 @@ def _cookie_name():
     return _cfg("SESSION_TOKEN_COOKIE", "session_token")
 
 
-def get_user_session_timeout(user):
-    attrs = _cfg("SESSION_PRIVILEGED_ATTRS", _DEFAULT_PRIVILEGED_ATTRS)
-    if any(getattr(user, attr, False) for attr in attrs):
-        return _cfg("SESSION_TIMEOUT_PRIVILEGED", timedelta(hours=9))
-    return _cfg("SESSION_TIMEOUT_DEFAULT", timedelta(minutes=60))
+def _as_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _naive(dt):
@@ -84,38 +108,82 @@ def _naive(dt):
     return dt
 
 
-def get_session_time_left():
-    """Seconds left before idle logout, plus the total timeout (both ints),
-    or ``None`` when there is no valid session. Used by the header timer."""
-    session_data = get_session_from_cookie()
-    if not session_data:
-        return None
+def _enforcing():
+    """Whether the idle timeout is actually acted on right now."""
+    if not current_app.debug:
+        return True
+    return _as_bool(_cfg("SESSION_ENFORCE_IN_DEBUG", False))
 
-    user = User.query.get(session_data["user_id"])
-    if not user:
-        return None
 
-    last_active = _naive(datetime.fromisoformat(session_data["last_active"]))
-    current_time = _naive(current_utc_time())
+def _ignore_prefixes():
+    return tuple(_cfg("SESSION_ACTIVITY_IGNORE_PREFIXES", _DEFAULT_IGNORE_PREFIXES))
 
-    session_timeout = get_user_session_timeout(user)
-    seconds_left = (session_timeout - (current_time - last_active)).total_seconds()
-    return max(0, int(seconds_left)), int(session_timeout.total_seconds())
 
+def _is_activity_request():
+    """True when the current request should slide the idle window: a real page
+    navigation or server action, not an ``/api`` poll or a helper endpoint."""
+    path = request.path or "/"
+    if any(path.startswith(p) for p in _ignore_prefixes()):
+        return False
+    endpoint = request.endpoint or ""
+    if endpoint.rsplit(".", 1)[-1] == "static":
+        return False
+    return True
+
+
+def _wants_json():
+    path = request.path or ""
+    if path.startswith("/api"):
+        return True
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return True
+    accept = request.accept_mimetypes
+    return accept["application/json"] >= accept["text/html"] and accept["application/json"] > 0
+
+
+def get_user_session_timeout(user):
+    attrs = _cfg("SESSION_PRIVILEGED_ATTRS", _DEFAULT_PRIVILEGED_ATTRS)
+    if any(getattr(user, attr, False) for attr in attrs):
+        return _cfg("SESSION_TIMEOUT_PRIVILEGED", timedelta(hours=9))
+    return _cfg("SESSION_TIMEOUT_DEFAULT", timedelta(minutes=60))
+
+
+# --------------------------------------------------------------------------- #
+#  JWT idle-token
+# --------------------------------------------------------------------------- #
 
 def create_session_token(user):
     now = current_utc_time()
     payload = {
         "user_id": user.id,
-        "email": user.email,
-        "full_name": f"{user.last_name or ''} {user.first_name or ''} {user.patronymic_name or ''}".strip(),
-        "is_admin": bool(getattr(user, "is_admin", False)),
-        "is_auditor": bool(getattr(user, "is_auditor", False)),
         "session_id": str(uuid.uuid4()),
         "created_at": now.isoformat(),
-        "last_active": now.isoformat(),
         "exp": (now + SESSION_DURATION).timestamp(),
     }
+    return jwt.encode(payload, current_app.config["SECRET_KEY"], algorithm=JWT_ALGORITHM)
+
+
+def verify_session_token(token):
+    if not token:
+        return None
+    try:
+        return jwt.decode(token, current_app.config["SECRET_KEY"], algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError as exc:
+        current_app.logger.debug("invalid session token: %s", exc)
+        return None
+
+
+def update_session_activity(token):
+    """Kept for API compatibility. The token no longer carries a ``last_active``
+    claim, so this just re-issues it with a fresh ``exp`` (slides the 7-day cap)
+    or returns ``None`` if the token is unusable."""
+    payload = verify_session_token(token)
+    if not payload:
+        return None
+    now = current_utc_time()
+    payload["exp"] = (now + SESSION_DURATION).timestamp()
     return jwt.encode(payload, current_app.config["SECRET_KEY"], algorithm=JWT_ALGORITHM)
 
 
@@ -125,51 +193,48 @@ def set_session_cookie(response, token):
         value=token,
         max_age=int(SESSION_DURATION.total_seconds()),
         httponly=True,
-        secure=False,
+        secure=_as_bool(_cfg("SESSION_TOKEN_COOKIE_SECURE", False)),
         samesite="Lax",
         path="/",
     )
     return response
 
 
-def create_login_response(user, redirect_endpoint=None):
-    endpoint = redirect_endpoint or _cfg("SESSION_DEFAULT_REDIRECT", "views.profile")
-    token = create_session_token(user)
-    response = make_response(redirect(url_for(endpoint)))
-    return set_session_cookie(response, token)
-
-
-def verify_session_token(token):
-    try:
-        return jwt.decode(token, current_app.config["SECRET_KEY"], algorithms=[JWT_ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        current_app.logger.debug("Session token expired")
-        return None
-    except jwt.InvalidTokenError as e:
-        current_app.logger.debug(f"Invalid session token: {e}")
-        return None
+def clear_session_cookie(response):
+    response.delete_cookie(_cookie_name(), path="/")
+    return response
 
 
 def get_session_from_cookie():
+    return verify_session_token(request.cookies.get(_cookie_name()))
+
+
+def create_login_response(user, redirect_endpoint=None):
+    endpoint = redirect_endpoint or _cfg("SESSION_DEFAULT_REDIRECT", "views.profile")
+    response = make_response(redirect(url_for(endpoint)))
+    return set_session_cookie(response, create_session_token(user))
+
+
+def get_or_refresh_session(user):
+    """Return ``(token, payload)`` for the current browser, minting or renewing
+    the cookie token as needed. No activity side effects."""
     token = request.cookies.get(_cookie_name())
-    if not token:
-        return None
-    return verify_session_token(token)
+    payload = verify_session_token(token)
+
+    if not payload:
+        token = create_session_token(user)
+        return token, verify_session_token(token)
+
+    if payload.get("exp", 0) - time.time() <= _TOKEN_RENEW_WITHIN.total_seconds():
+        token = update_session_activity(token) or token
+        payload = verify_session_token(token) or payload
+
+    return token, payload
 
 
-def update_session_activity(token):
-    try:
-        payload = jwt.decode(
-            token,
-            current_app.config["SECRET_KEY"],
-            algorithms=[JWT_ALGORITHM],
-            options={"verify_exp": False},
-        )
-        payload["last_active"] = current_utc_time().isoformat()
-        return jwt.encode(payload, current_app.config["SECRET_KEY"], algorithm=JWT_ALGORITHM)
-    except jwt.InvalidTokenError:
-        return None
-
+# --------------------------------------------------------------------------- #
+#  UI helpers
+# --------------------------------------------------------------------------- #
 
 def describe_device(ua_string):
     try:
@@ -177,155 +242,104 @@ def describe_device(ua_string):
         browser = ua.browser.family or "Браузер"
         os_name = ua.os.family or ""
         return f"{browser} · {os_name}".strip(" ·") or "Неизвестное устройство"
-    except Exception:
+    except Exception:                                     # noqa: BLE001
         return "Неизвестное устройство"
 
 
+def _role_label(user):
+    if getattr(user, "is_admin", False):
+        return "Администратор"
+    if getattr(user, "is_auditor", False):
+        return "Аудитор"
+    if getattr(user, "is_approver", False):
+        return "Утверждающий"
+    if getattr(user, "is_reader", False):
+        return "Читатель"
+    return "Респондент"
+
+
 def build_session_info(user, payload=None):
-    """Session data for the 'Сессии' profile section / session-info endpoint."""
-    timeout = get_user_session_timeout(user)
+    """State for the profile 'Сессия' card and the ``/session-info`` endpoint.
+    ``last_active`` / ``expires_at`` come from the real per-app activity row."""
     now = current_utc_time()
+    timeout = get_user_session_timeout(user)
 
-    last_active = now
     created_at = now
-    device = describe_device(request.headers.get("User-Agent", ""))
-
-    if payload:
+    if payload and payload.get("created_at"):
         try:
-            last_active = datetime.fromisoformat(payload.get("last_active"))
-        except (TypeError, ValueError):
-            pass
-        try:
-            created_at = datetime.fromisoformat(payload.get("created_at"))
+            created_at = datetime.fromisoformat(payload["created_at"])
         except (TypeError, ValueError):
             pass
 
-    if user.is_admin:
-        role_label = "Администратор"
-    elif getattr(user, "is_auditor", False):
-        role_label = "Аудитор"
-    elif getattr(user, "is_approver", False):
-        role_label = "Утверждающий"
-    elif getattr(user, "is_reader", False):
-        role_label = "Читатель"
-    else:
-        role_label = "Респондент"
+    last_active = _naive(get_app_last_active(user.id, _cfg("APP_NAME", None))) or _naive(now)
 
     return {
-        "role_label": role_label,
+        "role_label": _role_label(user),
         "timeout_minutes": int(timeout.total_seconds() // 60),
         "created_at": created_at.isoformat(),
         "last_active": last_active.isoformat(),
         "expires_at": (last_active + timeout).isoformat(),
-        "server_time": now.isoformat(),
-        "device": device,
+        "server_time": _naive(now).isoformat(),
+        "device": describe_device(request.headers.get("User-Agent", "")),
         "ip": request.remote_addr or "",
     }
 
 
-def get_or_refresh_session(user):
-    """Read the idle token for this request, refreshing its ``last_active``,
-    or mint a fresh one if it is missing/expired. Returns ``(token, payload)``."""
-    token = request.cookies.get(_cookie_name())
-    payload = verify_session_token(token) if token else None
+def get_session_time_left():
+    """``(seconds_left, timeout_seconds)`` for the header timer, or ``None``."""
+    if not current_user.is_authenticated:
+        return None
+    user = current_user._get_current_object()
+    timeout = get_user_session_timeout(user)
+    last = _naive(get_app_last_active(user.id, _cfg("APP_NAME", None))) or _naive(current_utc_time())
+    left = (timeout - (_naive(current_utc_time()) - last)).total_seconds()
+    return max(0, int(left)), int(timeout.total_seconds())
 
-    if payload:
-        token = update_session_activity(token) or token
-    else:
-        token = create_session_token(user)
 
-    return token, verify_session_token(token)
+# --------------------------------------------------------------------------- #
+#  logout / guards
+# --------------------------------------------------------------------------- #
+
+def _login_redirect():
+    resp = make_response(redirect(url_for(_cfg("SESSION_LOGIN_ENDPOINT", "views.login"))))
+    return clear_session_cookie(resp)
 
 
 def force_logout():
-    login_endpoint = _cfg("SESSION_LOGIN_ENDPOINT", "views.login")
-    response = make_response(redirect(url_for(login_endpoint)))
-    response.delete_cookie(_cookie_name(), path="/")
     flash("Сессия недействительна или истекла. Пожалуйста, войдите снова", "error")
-    return response
+    return _login_redirect()
 
 
 def session_required(view_func):
+    """Require an authenticated user (redirecting anonymous visitors to the
+    login endpoint) and make sure the idle-token cookie exists. The idle
+    timeout itself is enforced globally by :func:`enforce_idle_timeout`."""
     @wraps(view_func)
     def wrapper(*args, **kwargs):
-        debug = current_app.debug
-        enforce_raw = _cfg("SESSION_ENFORCE_IN_DEBUG", False)
-        enforce_in_debug = (
-            enforce_raw if isinstance(enforce_raw, bool)
-            else str(enforce_raw).lower() in {"1", "true", "yes", "on"}
-        )
+        if not current_user.is_authenticated:
+            if current_app.debug and not _enforcing():
+                return view_func(*args, **kwargs)
+            return _login_redirect()
 
-        if debug and not enforce_in_debug:
+        if verify_session_token(request.cookies.get(_cookie_name())):
             return view_func(*args, **kwargs)
 
-        token = request.cookies.get(_cookie_name())
-        session_data = verify_session_token(token) if token else None
-
-        if not session_data:
-            if current_user.is_authenticated:
-                # Flask-Login session is still valid but our idle token is
-                # missing/expired (e.g. predates this mechanism). Self-heal
-                # instead of a disruptive logout.
-                token = create_session_token(current_user._get_current_object())
-                session_data = verify_session_token(token)
-            elif debug:
-                return view_func(*args, **kwargs)
-            else:
-                return force_logout()
-
-        user = User.query.get(session_data["user_id"])
-        if not user:
-            if debug:
-                return view_func(*args, **kwargs)
-            return force_logout()
-
-        last_active = _naive(datetime.fromisoformat(session_data["last_active"]))
-        current_time = _naive(current_utc_time())
-        session_timeout = get_user_session_timeout(user)
-
-        if current_time - last_active > session_timeout:
-            return force_logout()
-
-        touch_user_activity(user.id, _cfg("APP_NAME", None))
-
-        new_token = update_session_activity(token)
-        response = view_func(*args, **kwargs)
-
-        if isinstance(response, str):
-            response = make_response(response)
-
-        if new_token and new_token != token:
-            response = set_session_cookie(response, new_token)
-
-        return response
+        # Flask-Login session is valid but our cookie is missing/expired.
+        token = create_session_token(current_user._get_current_object())
+        response = make_response(view_func(*args, **kwargs))
+        return set_session_cookie(response, token)
 
     return wrapper
 
 
 def enforce_idle_timeout(app):
-    """Global backstop against a stale session.
-
-    Registers a ``before_request`` hook that, for every authenticated user and
-    on every page (not just ``@session_required`` ones), compares the user's
-    last activity **in this app** — ``UserAppActivity.last_active`` for
-    ``(user, APP_NAME)`` — against the idle timeout allowed for their role
-    (:func:`get_user_session_timeout`). If it is exceeded the user is logged
-    out: this catches the case where the browser still holds a valid
-    session/remember cookie but the person has been away far longer than the
-    session should live. Otherwise the activity row is refreshed (throttled)
-    so any real request slides the window.
-
-    Also stamps activity on every ``login_user`` (via the ``user_logged_in``
-    signal) so the guard never trips on the redirect that immediately follows
-    a fresh login.
-    """
+    """Install the single global idle-timeout guard (see module docstring)."""
     from flask_login import logout_user, user_logged_in
 
     def _on_login(sender, user, **extra):
         if user is not None:
             touch_user_activity(user.id, app.config.get("APP_NAME"), throttle_seconds=0)
 
-    # keep a strong ref so blinker's weak connection is not garbage-collected
     app.extensions.setdefault("cm_session_hooks", {})["on_login"] = _on_login
     user_logged_in.connect(_on_login, app)
 
@@ -337,8 +351,6 @@ def enforce_idle_timeout(app):
         endpoint = request.endpoint
         if not endpoint:
             return None
-        # never touch static, or any auth entry/exit page — logging in must
-        # always be possible even when the stored activity is ancient.
         if endpoint.rsplit(".", 1)[-1] in ("static", "login", "logout", "sign"):
             return None
         if endpoint in (
@@ -352,7 +364,7 @@ def enforce_idle_timeout(app):
 
         app_name = _cfg("APP_NAME", None)
         if not app_name:
-            return None  # cannot scope activity to an app — nothing to enforce
+            return None
 
         user = current_user._get_current_object()
         now = _naive(current_utc_time())
@@ -362,28 +374,20 @@ def enforce_idle_timeout(app):
             touch_user_activity(user.id, app_name, throttle_seconds=0)
             return None
 
-        enforce_raw = _cfg("SESSION_ENFORCE_IN_DEBUG", False)
-        enforce_in_debug = (
-            enforce_raw if isinstance(enforce_raw, bool)
-            else str(enforce_raw).lower() in {"1", "true", "yes", "on"}
-        )
-        enforcing = enforce_in_debug or not current_app.debug
-
-        if enforcing and now - last > get_user_session_timeout(user):
+        if _enforcing() and now - last > get_user_session_timeout(user):
             logout_user()
+            if _wants_json():
+                return jsonify({"success": False, "error": "session_expired"}), 401
             return force_logout()
 
-        touch_user_activity(user.id, app_name)  # throttled slide of the window
+        if _is_activity_request():
+            touch_user_activity(
+                user.id, app_name,
+                throttle_seconds=int(_cfg("SESSION_ACTIVITY_WRITE_INTERVAL", 45)),
+            )
         return None
 
 
 def get_current_user():
-    session_data = get_session_from_cookie()
-    if session_data:
-        return User.query.get(session_data["user_id"])
-    return None
-
-
-def clear_session_cookie(response):
-    response.delete_cookie(_cookie_name(), path="/")
-    return response
+    data = get_session_from_cookie()
+    return User.query.get(data["user_id"]) if data else None
