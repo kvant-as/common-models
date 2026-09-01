@@ -31,7 +31,7 @@ class Field:
     def __init__(self, name, label=None, type="str", required=False,
                  choices=None, target=None, target_label=None, blank=True,
                  create_only=False, skip_if_blank=False, transform=None,
-                 help=None, rows=5, accept=None, upload_to=None):
+                 help=None, rows=5, accept=None, upload_to=None, default=None):
         self.name = name
         self.label = label or name.replace("_", " ").capitalize()
         self.type = type
@@ -47,6 +47,7 @@ class Field:
         self.rows = rows
         self.accept = accept
         self.upload_to = upload_to              # dir relative to app.root_path
+        self.default = default                  # pre-filled value on the create form
 
     # -- read one value out of the submitted form --------------------------- #
     def extract(self, form, files):
@@ -112,7 +113,8 @@ class ModelAdmin:
                  list_display=None, list_badges=(), list_format=None,
                  search=(), order_by="-id", per_page=25,
                  can_create=True, can_edit=True, can_delete=True,
-                 fields=(), readonly=False, stat_label=None, stat_count=None):
+                 fields=(), readonly=False, stat_label=None, stat_count=None,
+                 on_save=None):
         self.model = model
         self.name = name
         self.group = group
@@ -131,6 +133,7 @@ class ModelAdmin:
         self.fields = list(fields)
         self.stat_label = stat_label
         self.stat_count = stat_count
+        self.on_save = on_save          # callable(obj, creating) before commit
 
     # -- queries ---------------------------------------------------------- #
     def base_query(self):
@@ -367,6 +370,8 @@ def _edit(site, ma, obj, creating):
 
         if not errors:
             try:
+                if ma.on_save:
+                    ma.on_save(obj, creating)
                 if creating:
                     db.session.add(obj)
                 db.session.commit()
@@ -376,9 +381,15 @@ def _edit(site, ma, obj, creating):
                 db.session.rollback()
                 errors["__all__"] = str(exc)
 
+    def _fv_value(f):
+        v = getattr(obj, f.name, None)
+        if v is None and creating and f.default is not None:
+            return f.default
+        return v
+
     field_views = [{
         "spec": f,
-        "value": getattr(obj, f.name, None),
+        "value": _fv_value(f),
         "options": f.options(),
         "error": errors.get(f.name),
     } for f in fields]
