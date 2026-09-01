@@ -345,12 +345,16 @@ def enforce_idle_timeout(app):
             return None
 
         endpoint = request.endpoint
-        if not endpoint or endpoint.rsplit(".", 1)[-1] == "static":
+        if not endpoint:
             return None
-
-        login_ep = _cfg("SESSION_LOGIN_ENDPOINT", "views.login")
-        logout_ep = _cfg("SESSION_LOGOUT_ENDPOINT", "auth.logout")
-        if endpoint in (login_ep, logout_ep):
+        # never touch static, or any auth entry/exit page — logging in must
+        # always be possible even when the stored last_active is ancient.
+        if endpoint.rsplit(".", 1)[-1] in ("static", "login", "logout", "sign"):
+            return None
+        if endpoint in (
+            _cfg("SESSION_LOGIN_ENDPOINT", "views.login"),
+            _cfg("SESSION_LOGOUT_ENDPOINT", "auth.logout"),
+        ):
             return None
 
         if not current_user.is_authenticated:
