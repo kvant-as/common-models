@@ -216,9 +216,18 @@ class AdminSite:
     def dashboard(self, greeting_attr=None, stats=(), online_count=None, actions=()):
         """Configure the admin home page: a greeting, a row of count cards for
         the given registered model keys, an optional live "online now" number
-        from ``online_count()``, and an optional list of one-click ``actions``
-        — each ``{"label", "endpoint"|"url", "method"="post", "confirm"=None}`` —
-        rendered as buttons that POST via fetch and show the JSON ``message``."""
+        from ``online_count()``, and an optional list of ``actions`` rendered
+        as buttons that call their endpoint via fetch and show the JSON
+        ``message`` — no page navigation. Each is either::
+
+            {"label", "endpoint"|"url", "method"="post", "confirm"=None}
+
+        (plain POST, no body) or, with ``"type": "upload"``, a file-picker
+        button that uploads the chosen file as ``multipart/form-data``::
+
+            {"label", "endpoint"|"url", "type": "upload",
+             "field"="file", "accept"=None, "confirm"=None}
+        """
         self._dash.update(
             actions=[dict(a) for a in actions],
             greeting_attr=greeting_attr,
@@ -305,6 +314,9 @@ def dashboard():
             "url": url,
             "method": (a.get("method") or "post").upper(),
             "confirm": a.get("confirm"),
+            "type": a.get("type", "click"),      # "click" | "upload"
+            "field": a.get("field", "file"),     # upload: form-data field name
+            "accept": a.get("accept"),           # upload: <input accept="...">
         })
 
     return render_template(

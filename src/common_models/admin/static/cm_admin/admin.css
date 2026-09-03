@@ -75,7 +75,7 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- dashboard actions ---------- */
 .cm-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
-.cm-action[disabled] { opacity: .6; cursor: default; }
+.cm-action[disabled], .cm-action-upload[disabled] { opacity: .6; cursor: default; }
 .cm-action-status {
   margin: 4px 0 32px; padding: 10px 14px; border-radius: 8px;
   font-size: 13px; border: 1px solid var(--line);

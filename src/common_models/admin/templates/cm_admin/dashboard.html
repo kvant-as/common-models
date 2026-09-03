@@ -27,11 +27,22 @@
     <h2 class="cm-h2" style="margin-bottom: 14px;">Действия</h2>
     <div class="cm-actions">
       {% for a in actions %}
-        <button type="button" class="cm-btn cm-action"
-                data-url="{{ a.url }}" data-method="{{ a.method }}"
-                {% if a.confirm %}data-confirm="{{ a.confirm }}"{% endif %}>
-          {{ a.label }}
-        </button>
+        {% if a.type == "upload" %}
+          <input type="file" class="cm-action-input" id="cmActionFile{{ loop.index }}"
+                 data-url="{{ a.url }}" data-field="{{ a.field }}"
+                 {% if a.accept %}accept="{{ a.accept }}"{% endif %} hidden>
+          <button type="button" class="cm-btn cm-action-upload"
+                  data-target="cmActionFile{{ loop.index }}"
+                  {% if a.confirm %}data-confirm="{{ a.confirm }}"{% endif %}>
+            {{ a.label }}
+          </button>
+        {% else %}
+          <button type="button" class="cm-btn cm-action"
+                  data-url="{{ a.url }}" data-method="{{ a.method }}"
+                  {% if a.confirm %}data-confirm="{{ a.confirm }}"{% endif %}>
+            {{ a.label }}
+          </button>
+        {% endif %}
       {% endfor %}
     </div>
     <div id="cmActionStatus" class="cm-action-status" hidden></div>
@@ -44,28 +55,48 @@
           status.textContent = msg;
           status.className = "cm-action-status " + (ok ? "is-ok" : "is-bad");
         }
+        function runRequest(btn, req) {
+          var orig = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = "…";
+          show("Выполняется…", true);
+          fetch(req.url, {
+            method: req.method || "POST",
+            credentials: "same-origin",
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+            body: req.body,
+          })
+            .then(function (r) {
+              return r.json().catch(function () { return { success: r.ok }; })
+                .then(function (d) { return { ok: r.ok, d: d }; });
+            })
+            .then(function (res) {
+              var d = res.d || {};
+              show(d.message || (res.ok ? "Готово" : "Ошибка"), res.ok && d.success !== false);
+            })
+            .catch(function () { show("Не удалось выполнить запрос", false); })
+            .finally(function () { btn.disabled = false; btn.textContent = orig; });
+        }
+
         document.querySelectorAll(".cm-action").forEach(function (btn) {
           btn.addEventListener("click", function () {
             if (btn.dataset.confirm && !window.confirm(btn.dataset.confirm)) return;
-            var orig = btn.textContent;
-            btn.disabled = true;
-            btn.textContent = "…";
-            show("Выполняется…", true);
-            fetch(btn.dataset.url, {
-              method: btn.dataset.method || "POST",
-              credentials: "same-origin",
-              headers: { "X-Requested-With": "XMLHttpRequest" },
-            })
-              .then(function (r) {
-                return r.json().catch(function () { return { success: r.ok }; })
-                  .then(function (d) { return { ok: r.ok, d: d }; });
-              })
-              .then(function (res) {
-                var d = res.d || {};
-                show(d.message || (res.ok ? "Готово" : "Ошибка"), res.ok && d.success !== false);
-              })
-              .catch(function () { show("Не удалось выполнить запрос", false); })
-              .finally(function () { btn.disabled = false; btn.textContent = orig; });
+            runRequest(btn, { url: btn.dataset.url, method: btn.dataset.method });
+          });
+        });
+
+        document.querySelectorAll(".cm-action-upload").forEach(function (btn) {
+          var input = document.getElementById(btn.dataset.target);
+          btn.addEventListener("click", function () {
+            if (btn.dataset.confirm && !window.confirm(btn.dataset.confirm)) return;
+            input.value = "";
+            input.click();
+          });
+          input.addEventListener("change", function () {
+            if (!input.files || !input.files[0]) return;
+            var fd = new FormData();
+            fd.append(input.dataset.field || "file", input.files[0]);
+            runRequest(btn, { url: input.dataset.url, method: "POST", body: fd });
           });
         });
       })();
