@@ -47,8 +47,12 @@
 
     function fmt(ms) {
         var total = Math.max(0, Math.floor(ms / 1000));
-        return String(Math.floor(total / 60)).padStart(2, "0") + ":" +
-               String(total % 60).padStart(2, "0");
+        var h = Math.floor(total / 3600);
+        var m = Math.floor((total % 3600) / 60);
+        var s = total % 60;
+        return String(h).padStart(2, "0") + ":" +
+               String(m).padStart(2, "0") + ":" +
+               String(s).padStart(2, "0");
     }
 
     function paint() {

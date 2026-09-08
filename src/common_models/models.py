@@ -410,10 +410,20 @@ class Indicator(db.Model):
     
     is_local = db.Column(db.Boolean, default=False)
     is_renewable = db.Column(db.Boolean, default=False)
-    
+
     IsMandatory = db.Column(db.Boolean)
     Group = db.Column(db.Float)
     RowN = db.Column(db.Integer)
+
+    # Показатель считается автоматически (update_plan_indicators) —
+    # его нельзя удалить/отредактировать вручную в таблице показателей.
+    is_computed = db.Column(db.Boolean, default=False, nullable=False)
+    # Рост значения относительно импортированного отчёта — это хорошо
+    # (True, зелёным) или плохо (False/NULL, красным) для этого показателя.
+    higher_is_better = db.Column(db.Boolean, nullable=True)
+    # "Прочие" показатели: при добавлении нужно выбрать категорию
+    # топлива и ввести своё наименование, разрешено добавлять несколько.
+    is_custom = db.Column(db.Boolean, default=False, nullable=False)
 
     DateStart = db.Column(db.DateTime, default=None)
     DateEnd = db.Column(db.DateTime, default=None)
