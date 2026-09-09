@@ -4,6 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ site.brand }} · Админка{% endblock %}</title>
+
+  <script>
+    // Тот же ключ localStorage, что и на основном сайте (theme.js) — общий
+    // для всего origin, поэтому переключатель темы в шапке сайта работает
+    // и здесь, в отдельном мини-приложении админки, без своей кнопки.
+    (function () {
+      try {
+        var saved = localStorage.getItem('enplans-theme');
+        var theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {}
+    })();
+  </script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap">
@@ -30,6 +44,7 @@
     </nav>
 
     <div class="cm-nav-right">
+      <a href="#" id="cmThemeToggle">Тема</a>
       {% if site.site_endpoint %}
         <a href="{{ url_for(site.site_endpoint) }}">На сайт</a>
       {% endif %}
@@ -50,5 +65,21 @@
 
     {% block content %}{% endblock %}
   </main>
+
+  <script>
+    // Тот же localStorage-ключ и логика, что и в theme.js основного сайта —
+    // переключение здесь сразу видно и на остальных страницах enPlans.
+    (function () {
+      var STORAGE_KEY = 'enplans-theme';
+      var btn = document.getElementById('cmThemeToggle');
+      if (!btn) return;
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem(STORAGE_KEY, next); } catch (err) {}
+      });
+    })();
+  </script>
 </body>
 </html>
