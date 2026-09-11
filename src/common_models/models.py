@@ -551,8 +551,13 @@ class Chat(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=True)
     # тип обращения, выбранный в виджете виртуального помощника: 'no-org',
-    # 'compl-plan' или 'dif' ('Другое' — уходит живому администратору, без ИИ)
+    # 'compl-plan', 'dif' ('Другое' — уходит живому администратору, без ИИ)
+    # или 'org-edit' (автоматическая переписка по изменению данных
+    # организации — ведёт бот-сценарий, см. routes/org_edit_bot.py)
     chat_type = db.Column(db.String(20), nullable=True)
+    # служебное состояние сценария бота (JSON-строка) — используется только
+    # автоматическими сценариями вроде 'org-edit'; для остальных типов пусто
+    flow_state = db.Column(db.Text, nullable=True)
     created_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_by = db.relationship('User', foreign_keys=[created_by_id], back_populates='created_chats')
     messages = db.relationship('ChatMessage',

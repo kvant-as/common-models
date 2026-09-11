@@ -17,6 +17,7 @@ from .models import (
     StatPlan, StatPlanValue, ChatMessage, Chat,
 )
 from .activity import touch_user_activity, get_app_last_active, count_online
+from .validators import validate_okpo, validate_ynp
 
 __all__ = [
     'current_utc_time', 'get_previous_quarter', 'get_report_year',
@@ -33,4 +34,5 @@ __all__ = [
     'StatPlan', 'StatPlanValue', 'ChatMessage', 'Chat',
 
     'touch_user_activity', 'get_app_last_active', 'count_online',
+    'validate_okpo', 'validate_ynp',
 ]
