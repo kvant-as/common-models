@@ -205,6 +205,7 @@ class AdminSite:
             "stats": [],
             "online_count": None,      # optional callable -> int
             "actions": [],             # list of {label, endpoint|url, method, confirm}
+            "panels": [],              # list of {title, rows, empty}
         }
 
     # -- public API ------------------------------------------------------- #
@@ -213,11 +214,11 @@ class AdminSite:
         self._models[ma.key] = ma
         return ma
 
-    def dashboard(self, greeting_attr=None, stats=(), online_count=None, actions=()):
+    def dashboard(self, greeting_attr=None, stats=(), online_count=None, actions=(), panels=()):
         """Configure the admin home page: a greeting, a row of count cards for
         the given registered model keys, an optional live "online now" number
-        from ``online_count()``, and an optional list of ``actions`` rendered
-        as buttons that call their endpoint via fetch and show the JSON
+        from ``online_count()``, an optional list of ``actions`` rendered as
+        buttons that call their endpoint via fetch and show the JSON
         ``message`` — no page navigation. Each is either::
 
             {"label", "endpoint"|"url", "method"="post", "confirm"=None}
@@ -227,12 +228,22 @@ class AdminSite:
 
             {"label", "endpoint"|"url", "type": "upload",
              "field"="file", "accept"=None, "confirm"=None}
+
+        ``panels`` add one or more "needs attention" lists above the actions —
+        e.g. open support chats. Each is::
+
+            {"title": "...", "rows": callable_or_list, "empty": "..."}
+
+        ``rows`` is called fresh on every dashboard load (so it can query the
+        DB) and must return dicts shaped
+        ``{"title", "subtitle"="", "meta"="", "url"}``.
         """
         self._dash.update(
             actions=[dict(a) for a in actions],
             greeting_attr=greeting_attr,
             stats=list(stats),
             online_count=online_count,
+            panels=[dict(p) for p in panels],
         )
 
     def init_app(self, app):
@@ -319,9 +330,22 @@ def dashboard():
             "accept": a.get("accept"),           # upload: <input accept="...">
         })
 
+    panels = []
+    for p in dash.get("panels", []):
+        rows_src = p.get("rows")
+        try:
+            rows = rows_src() if callable(rows_src) else list(rows_src or [])
+        except Exception:                              # noqa: BLE001
+            rows = []
+        panels.append({
+            "title": p.get("title", ""),
+            "rows": rows,
+            "empty": p.get("empty", "Пусто"),
+        })
+
     return render_template(
         "cm_admin/dashboard.html",
-        cards=cards, greeting=greeting, online=online, actions=actions,
+        cards=cards, greeting=greeting, online=online, actions=actions, panels=panels,
         **site.nav_context(),
     )
 

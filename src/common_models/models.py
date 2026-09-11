@@ -550,6 +550,9 @@ class Chat(db.Model):
     __tablename__ = 'chats'
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=True)
+    # тип обращения, выбранный в виджете виртуального помощника: 'no-org',
+    # 'compl-plan' или 'dif' ('Другое' — уходит живому администратору, без ИИ)
+    chat_type = db.Column(db.String(20), nullable=True)
     created_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_by = db.relationship('User', foreign_keys=[created_by_id], back_populates='created_chats')
     messages = db.relationship('ChatMessage',

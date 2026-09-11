@@ -23,6 +23,26 @@
     </div>
   {% endif %}
 
+  {% for panel in panels %}
+    <div class="cm-section-head">
+      <h2 class="cm-h2">{{ panel.title }}</h2>
+      {% if panel.rows %}<span class="cm-muted">{{ panel.rows|length }}</span>{% endif %}
+    </div>
+    <div class="cm-rows" style="margin-bottom: 32px;">
+      {% for row in panel.rows %}
+        <a class="cm-row" href="{{ row.url }}">
+          <div class="cm-row-block">
+            <span class="cm-row-title">{{ row.title }}</span>
+            {% if row.subtitle %}<span class="cm-row-sub">{{ row.subtitle }}</span>{% endif %}
+          </div>
+          {% if row.meta %}<span class="cm-row-meta">{{ row.meta }}</span>{% endif %}
+        </a>
+      {% else %}
+        <div class="cm-empty">{{ panel.empty }}</div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+
   {% if actions %}
     <h2 class="cm-h2" style="margin-bottom: 14px;">Действия</h2>
     <div class="cm-actions">
