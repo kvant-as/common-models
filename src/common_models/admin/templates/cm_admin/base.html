@@ -9,11 +9,11 @@
     // Тот же ключ localStorage, что и на основном сайте (theme.js) — общий
     // для всего origin, поэтому переключатель темы в шапке сайта работает
     // и здесь, в отдельном мини-приложении админки, без своей кнопки.
+    // По умолчанию — светлая тема, независимо от системных настроек.
     (function () {
       try {
         var saved = localStorage.getItem('enplans-theme');
-        var theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.setAttribute('data-theme', saved || 'light');
       } catch (e) {}
     })();
   </script>
