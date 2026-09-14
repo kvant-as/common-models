@@ -75,11 +75,15 @@ class UserAppActivity(db.Model):
 class Organization(db.Model):
     __tablename__ = 'organization'
     id = db.Column(db.Integer, primary_key=True)
-    
+
     is_active = db.Column(db.Boolean, default=True)
     full_name = db.Column(db.String())
     okpo = db.Column(db.String, unique=True)
     ynp = db.Column(db.String(), nullable=True)
+    # для организаций, заведённых до этой колонки, останется NULL — так и
+    # задумано: у них нет достоверной даты создания, и они не должны
+    # попадать в подсчёты "новых за месяц" (см. enPlans views.begin_page)
+    created_at = db.Column(db.DateTime, nullable=True, default=current_utc_time)
 
     region_id = db.Column(db.Integer, db.ForeignKey('regions.id'))
     ministry_id = db.Column(db.Integer, db.ForeignKey('ministry.id'), nullable=True)
