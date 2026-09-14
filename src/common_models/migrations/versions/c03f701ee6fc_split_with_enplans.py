@@ -1,8 +1,8 @@
 """split with enplans
 
-Revision ID: 2ff307da7ca1
+Revision ID: c03f701ee6fc
 Revises: 
-Create Date: 2026-09-01 11:36:12.783508
+Create Date: 2026-09-14 10:50:25.648845
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = '2ff307da7ca1'
+revision = 'c03f701ee6fc'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -47,6 +47,9 @@ def upgrade():
     sa.Column('IsMandatory', sa.Boolean(), nullable=True),
     sa.Column('Group', sa.Float(), nullable=True),
     sa.Column('RowN', sa.Integer(), nullable=True),
+    sa.Column('is_computed', sa.Boolean(), nullable=False),
+    sa.Column('higher_is_better', sa.Boolean(), nullable=True),
+    sa.Column('is_custom', sa.Boolean(), nullable=False),
     sa.Column('DateStart', sa.DateTime(), nullable=True),
     sa.Column('DateEnd', sa.DateTime(), nullable=True),
     sa.ForeignKeyConstraint(['id_unit'], ['units.id'], ),
@@ -55,6 +58,8 @@ def upgrade():
     op.create_table('chats',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('title', sa.String(length=200), nullable=True),
+    sa.Column('chat_type', sa.String(length=20), nullable=True),
+    sa.Column('flow_state', sa.Text(), nullable=True),
     sa.Column('created_by_id', sa.Integer(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
@@ -233,6 +238,9 @@ def upgrade():
                type_=sa.String(length=255),
                existing_nullable=True)
 
+    with op.batch_alter_table('organization', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('created_at', sa.DateTime(), nullable=True))
+
     with op.batch_alter_table('user', schema=None) as batch_op:
         batch_op.add_column(sa.Column('is_admin', sa.Boolean(), server_default='false', nullable=True))
         batch_op.add_column(sa.Column('is_auditor', sa.Boolean(), server_default='false', nullable=True))
@@ -265,6 +273,9 @@ def downgrade():
         batch_op.drop_column('is_approver')
         batch_op.drop_column('is_auditor')
         batch_op.drop_column('is_admin')
+
+    with op.batch_alter_table('organization', schema=None) as batch_op:
+        batch_op.drop_column('created_at')
 
     with op.batch_alter_table('news', schema=None) as batch_op:
         batch_op.alter_column('img_name',
