@@ -32,21 +32,57 @@ class User(db.Model, UserMixin):
     # последняя активность теперь хранится по приложениям в UserAppActivity.last_active
     reset_password_token = db.Column(db.String(255), nullable=True)
     reset_password_expires = db.Column(db.DateTime, nullable=True)
-    
+
+    # Кэш последней успешной периодической верификации аккаунта по ЭЦП
+    # (см. UserVerification) — денормализован сюда, чтобы гейт на
+    # согласовании/утверждении плана проверял один столбец без join'а к
+    # журналу верификаций на каждое такое действие.
+    ecp_verified_until = db.Column(db.DateTime, nullable=True)
+
     organization_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
-    
+
     reports = db.relationship('Report', backref='user', lazy=True, cascade="all, delete-orphan")
     organization = db.relationship('Organization', back_populates='users')
     plans = db.relationship('Plan', back_populates='user', lazy=True, cascade="all, delete-orphan")
     tickets = db.relationship('PlanTicket', back_populates='user', lazy=True)
     notifications = db.relationship('Notification', back_populates='user', lazy=True, cascade="all, delete-orphan")
     created_chats = db.relationship('Chat', back_populates='created_by', cascade='all, delete-orphan')
-    
+
     activity = db.relationship('UserAppActivity', back_populates='user',
                                lazy=True, cascade='all, delete-orphan')
+    verifications = db.relationship('UserVerification', back_populates='user',
+                               lazy=True, cascade='all, delete-orphan')
+
+    def is_ecp_verified(self):
+        return bool(self.ecp_verified_until) and self.ecp_verified_until > current_utc_time()
 
     def __repr__(self):
         return f'<User {self.email}>'
+
+
+class UserVerification(db.Model):
+    """Журнал периодической верификации аккаунта по сертификату ЭЦП.
+
+    Отдельно от Plan-специфичной подписи при отправке плана (см.
+    enPlans website/ecp.py) — это именно подтверждение личности
+    владельца аккаунта, не привязанное к конкретному плану, и доступное
+    любому типу пользователя, не только согласующим/утверждающим.
+    """
+    __tablename__ = 'user_verifications'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    verified_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
+    expires_at = db.Column(db.DateTime, nullable=False)
+
+    cert_subject = db.Column(db.String(500), nullable=True)
+    cert_unp = db.Column(db.String(20), nullable=True)
+    ip_address = db.Column(db.String(64), nullable=True)
+
+    user = db.relationship('User', back_populates='verifications')
+
+    def __repr__(self):
+        return f'<UserVerification user={self.user_id} expires_at={self.expires_at}>'
 
 
 class UserAppActivity(db.Model):

@@ -8,7 +8,7 @@ from .timeutils import (
 from .models import (
     db, UserMixin,
 
-    User, UserAppActivity, Organization, Region, Ministry,
+    User, UserAppActivity, UserVerification, Organization, Region, Ministry,
     Message, Report, Version_report, Ticket,
     DirUnit, DirProduct, Sections, News,
 
@@ -25,7 +25,7 @@ __all__ = [
 
     'db', 'UserMixin',
 
-    'User', 'UserAppActivity', 'Organization', 'Region', 'Ministry',
+    'User', 'UserAppActivity', 'UserVerification', 'Organization', 'Region', 'Ministry',
     'Message', 'Report', 'Version_report', 'Ticket',
     'DirUnit', 'DirProduct', 'Sections', 'News',
 
