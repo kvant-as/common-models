@@ -405,7 +405,15 @@ class Event(db.Model):
     is_corrected = db.Column(db.Boolean, default=False)
     is_econom = db.Column(db.Boolean)
     is_increase = db.Column(db.Boolean)
-    
+
+    # ТЭО (технико-экономическое обоснование) — файл, прикреплённый к
+    # мероприятию. teo_filename — сгенерированное имя на диске (в
+    # TEO_UPLOAD_FOLDER), teo_original_name — имя, которое видит пользователь
+    # и под которым файл отдаётся на скачивание/просмотр.
+    teo_filename = db.Column(db.String(255))
+    teo_original_name = db.Column(db.String(400))
+    teo_uploaded_at = db.Column(db.DateTime)
+
     order = db.Column(db.Integer, default=None)
     plan = db.relationship("Plan", back_populates="events")
     direction = db.relationship('Direction', backref='events', foreign_keys=[id_direction])
@@ -437,7 +445,9 @@ class Event(db.Model):
             'is_increase': self.is_increase,
             'is_double_effect': is_double_effect,
             'direction_code': self.direction.code if self.direction else None,
-            'direction_name': self.direction.name if self.direction else None
+            'direction_name': self.direction.name if self.direction else None,
+            'has_teo': bool(self.teo_filename),
+            'teo_original_name': self.teo_original_name
         }
 
 class Indicator(db.Model):
