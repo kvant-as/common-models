@@ -31,7 +31,8 @@ class Field:
     def __init__(self, name, label=None, type="str", required=False,
                  choices=None, target=None, target_label=None, blank=True,
                  create_only=False, skip_if_blank=False, transform=None,
-                 help=None, rows=5, accept=None, upload_to=None, default=None):
+                 help=None, rows=5, accept=None, upload_to=None, default=None,
+                 readonly=False, display=None):
         self.name = name
         self.label = label or name.replace("_", " ").capitalize()
         self.type = type
@@ -48,9 +49,13 @@ class Field:
         self.accept = accept
         self.upload_to = upload_to              # dir relative to app.root_path
         self.default = default                  # pre-filled value on the create form
+        self.readonly = readonly                # shown, but not submitted/editable
+        self.display = display                  # callable(obj) -> str, for readonly fields whose raw column value isn't human-friendly (e.g. a fk id)
 
     # -- read one value out of the submitted form --------------------------- #
     def extract(self, form, files):
+        if self.readonly:
+            return _MISSING
         if self.type == "bool":
             return self.name in form
         if self.type == "file":
@@ -74,7 +79,7 @@ class Field:
                 return _MISSING
             return None if self.blank or not self.required else ""
 
-        if self.type in ("int", "fk"):
+        if self.type in ("int", "fk", "fk-search"):
             try:
                 return int(raw)
             except ValueError:
@@ -114,13 +119,21 @@ class ModelAdmin:
                  search=(), order_by="-id", per_page=25,
                  can_create=True, can_edit=True, can_delete=True,
                  fields=(), readonly=False, stat_label=None, stat_count=None,
-                 on_save=None):
+                 on_save=None, scope_query=None):
         self.model = model
         self.name = name
         self.group = group
         self.key = key or _slug(model.__name__)
+        self.is_link = False    # duck-typing flag so base.html can tell a ModelAdmin from a _NavLink
         self.pk_name = model.__mapper__.primary_key[0].name
-        self.list_display = list(list_display or ["id"])
+        # Каждый элемент — либо имя атрибута (колонка так и подписывается),
+        # либо (ключ, подпись) — для вычисляемых колонок через list_format,
+        # у которых ключ не обязан быть реальным атрибутом модели/красивой
+        # подписью одновременно.
+        self.list_display = [
+            d if isinstance(d, (tuple, list)) else (d, d)
+            for d in (list_display or ["id"])
+        ]
         self.list_badges = tuple(list_badges)
         self.list_format = dict(list_format or {})
         self.search = tuple(search)
@@ -134,10 +147,13 @@ class ModelAdmin:
         self.stat_label = stat_label
         self.stat_count = stat_count
         self.on_save = on_save          # callable(obj, creating) before commit
+        self.scope_query = scope_query  # optional callable(query) -> query, applied to list/search/fk-search
 
     # -- queries ---------------------------------------------------------- #
     def base_query(self):
         q = self.model.query
+        if self.scope_query:
+            q = self.scope_query(q)
         col = self.order_by.lstrip("-")
         if hasattr(self.model, col):
             attr = getattr(self.model, col)
@@ -187,6 +203,18 @@ _bp = Blueprint(
 )
 
 
+class _NavLink:
+    """A plain sidebar link to a custom page (e.g. AdminSite.link(...)) —
+    not backed by a registered ModelAdmin, so it has no CRUD/list route of
+    its own; ``endpoint`` is resolved via url_for() when the nav renders."""
+
+    def __init__(self, label, endpoint, group):
+        self.name = label
+        self.group = group
+        self.endpoint = endpoint
+        self.is_link = True
+
+
 class AdminSite:
     def __init__(self, brand, accent="#2563eb", accent_2=None,
                  url_prefix="/admin", site_endpoint=None,
@@ -200,6 +228,7 @@ class AdminSite:
         self.logout_endpoint = logout_endpoint
 
         self._models = {}          # key -> ModelAdmin
+        self._links = []           # list of _NavLink — plain nav links not backed by a ModelAdmin
         self._dash = {
             "greeting_attr": None,
             "stats": [],
@@ -213,6 +242,13 @@ class AdminSite:
         ma = ModelAdmin(model, **kw)
         self._models[ma.key] = ma
         return ma
+
+    def link(self, label, endpoint, group="Прочее"):
+        """Add a plain nav link (e.g. to a custom page that isn't a
+        registered model's CRUD) into the sidebar, grouped the same way as
+        registered models — resolved lazily via ``url_for(endpoint)`` on
+        each page load, so it's safe to call at import time."""
+        self._links.append(_NavLink(label, endpoint, group))
 
     def dashboard(self, greeting_attr=None, stats=(), online_count=None, actions=(), panels=()):
         """Configure the admin home page: a greeting, a row of count cards for
@@ -232,7 +268,13 @@ class AdminSite:
         ``panels`` add one or more "needs attention" lists above the actions —
         e.g. open support chats. Each is::
 
-            {"title": "...", "rows": callable_or_list, "empty": "..."}
+            {"title": "...", "rows": callable_or_list, "empty": "...",
+             "more_endpoint"=None, "more_url"=None, "more_label"="Показать все"}
+
+        ``more_endpoint`` (resolved via ``url_for`` — same convention as
+        ``actions``) or ``more_url`` (optional) renders a link next to the
+        title — e.g. to a dedicated full list page when ``rows`` only shows
+        a capped preview.
 
         ``rows`` is called fresh on every dashboard load (so it can query the
         DB) and must return dicts shaped
@@ -262,6 +304,8 @@ class AdminSite:
         out = {}
         for ma in self._models.values():
             out.setdefault(ma.group, []).append(ma)
+        for link in self._links:
+            out.setdefault(link.group, []).append(link)
         return out
 
     def nav_context(self):
@@ -337,10 +381,20 @@ def dashboard():
             rows = rows_src() if callable(rows_src) else list(rows_src or [])
         except Exception:                              # noqa: BLE001
             rows = []
+
+        more_url = p.get("more_url")
+        if not more_url and p.get("more_endpoint"):
+            try:
+                more_url = url_for(p["more_endpoint"])
+            except Exception:                          # noqa: BLE001
+                more_url = None
+
         panels.append({
             "title": p.get("title", ""),
             "rows": rows,
             "empty": p.get("empty", "Пусто"),
+            "more_url": more_url,
+            "more_label": p.get("more_label"),
         })
 
     return render_template(
@@ -348,6 +402,27 @@ def dashboard():
         cards=cards, greeting=greeting, online=online, actions=actions, panels=panels,
         **site.nav_context(),
     )
+
+
+@_bp.route("/_fk-search")
+def fk_search_view():
+    """Backs the searchable combobox for ``type="fk-search"`` fields — reuses
+    the target model's own registered search config (``ModelAdmin.search``)
+    instead of a separate one, so e.g. the Organization picker on the User
+    form searches the same fields (full_name/okpo/ynp) as the Organization
+    list page itself."""
+    from flask import jsonify
+
+    site = _site()
+    target_key = request.args.get("target", "")
+    term = request.args.get("q", "").strip()
+    ma = site._models.get(target_key)
+    if ma is None:
+        return jsonify([])
+
+    q = ma.search_query(ma.base_query(), term)
+    rows = q.limit(20).all()
+    return jsonify([{"id": ma.pk(o), "label": ma.title(o)} for o in rows])
 
 
 @_bp.route("/<key>/")
@@ -440,12 +515,31 @@ def _edit(site, ma, obj, creating):
             return f.default
         return v
 
-    field_views = [{
-        "spec": f,
-        "value": _fv_value(f),
-        "options": f.options(),
-        "error": errors.get(f.name),
-    } for f in fields]
+    def _fk_target_key(f):
+        if f.target is None:
+            return None
+        for ma2 in site._models.values():
+            if ma2.model is f.target:
+                return ma2.key
+        return None
+
+    def _fk_current_label(f, value):
+        if f.target is None or value in (None, ""):
+            return ""
+        related = db.session.get(f.target, value)
+        return _smart_label(related, f.target_label) if related else ""
+
+    field_views = []
+    for f in fields:
+        value = f.display(obj) if (f.readonly and f.display) else _fv_value(f)
+        field_views.append({
+            "spec": f,
+            "value": value,
+            "options": f.options(),
+            "error": errors.get(f.name),
+            "target_key": _fk_target_key(f) if f.type == "fk-search" else None,
+            "current_label": _fk_current_label(f, value) if f.type == "fk-search" else None,
+        })
 
     return render_template(
         "cm_admin/form.html",

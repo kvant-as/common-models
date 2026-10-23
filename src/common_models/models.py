@@ -8,25 +8,48 @@ from sqlalchemy import Numeric, UniqueConstraint
 
 db = SQLAlchemy()
 
+class Application(db.Model):
+    """Приложение на этой же БД (erespondentN, enPlans, ...). У каждого
+    аккаунта (User) теперь своя строка в одном конкретном приложении —
+    один и тот же email может быть зарегистрирован отдельно в каждом
+    приложении, это разные аккаунты с разными данными/ролями.
+
+    code — тот же короткий ключ, что уже используется в APP_NAME каждого
+    приложения и в UserAppActivity.app ('erespondentn' | 'enplans'), чтобы
+    приложение могло находить "себя" в этой таблице без доп. конфига.
+    """
+    __tablename__ = 'applications'
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(32), unique=True, nullable=False)
+    name = db.Column(db.String(200), nullable=False)
+
+    users = db.relationship('User', back_populates='application', lazy=True)
+
+    def __repr__(self):
+        return f'<Application {self.code}>'
+
 class User(db.Model, UserMixin):
     __tablename__ = 'user'
+    __table_args__ = (
+        # Email уникален только в рамках одного приложения — тот же человек
+        # регистрирует отдельный аккаунт в каждом приложении.
+        db.UniqueConstraint('email', 'application_id', name='uq_user_email_application'),
+    )
     id = db.Column(db.Integer, primary_key=True)
 
-    type = db.Column(db.String(13), default='Респондент')
     is_admin = db.Column(db.Boolean, default=False, server_default='false')
     is_auditor = db.Column(db.Boolean, default=False, server_default='false')
     is_approver = db.Column(db.Boolean, default=False, server_default='false')
     is_reader = db.Column(db.Boolean, default=False, server_default='false')
-    
-    email = db.Column(db.String(), unique=True)
-    fio = db.Column(db.String(100))
+
+    email = db.Column(db.String())
     last_name = db.Column(db.String())
     first_name = db.Column(db.String())
     patronymic_name = db.Column(db.String())
-    
+
     telephone = db.Column(db.String())
     post = db.Column(db.String())
-    
+
     password = db.Column(db.String())
     begin_time = db.Column(db.DateTime, default=current_utc_time)  # дата создания аккаунта
     # последняя активность теперь хранится по приложениям в UserAppActivity.last_active
@@ -40,6 +63,13 @@ class User(db.Model, UserMixin):
     ecp_verified_until = db.Column(db.DateTime, nullable=True)
 
     organization_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
+
+    # Nullable временно — на момент добавления колонки исторические строки
+    # ещё не разнесены по приложениям (см. backfill-кнопку в админке
+    # erespondentN). Новые строки должны проставлять application_id сразу
+    # при создании аккаунта.
+    application_id = db.Column(db.Integer, db.ForeignKey('applications.id'))
+    application = db.relationship('Application', back_populates='users')
 
     reports = db.relationship('Report', backref='user', lazy=True, cascade="all, delete-orphan")
     organization = db.relationship('Organization', back_populates='users')
