@@ -310,6 +310,13 @@ class PlanApprovalPath(db.Model):
     is_viewed = db.Column(db.Boolean, default=False)
     viewed_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False)
+
+    # Номер цикла отправки — раньше при каждой повторной отправке (после
+    # отмены/возврата на доработку) старые строки маршрута удалялись и
+    # вся история терялась. Теперь при новой отправке создаются новые
+    # строки со следующим cycle, а старые остаются как история (см.
+    # handle_sent_status / build_signature_cycles).
+    cycle = db.Column(db.Integer, nullable=False, default=1, server_default='1')
     
     plan = db.relationship("Plan", back_populates="approval_paths")
     organization = db.relationship("Organization", foreign_keys=[organization_id], back_populates="approval_paths")
@@ -364,7 +371,7 @@ class Plan(db.Model):
     
     plan_type = db.Column(db.String(50), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    
+
     org_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
     tickets = db.relationship('PlanTicket', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     events = db.relationship('Event', back_populates='plan', lazy=True, cascade="all, delete-orphan")
