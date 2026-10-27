@@ -317,9 +317,42 @@ class PlanApprovalPath(db.Model):
     # строки со следующим cycle, а старые остаются как история (см.
     # handle_sent_status / build_signature_cycles).
     cycle = db.Column(db.Integer, nullable=False, default=1, server_default='1')
-    
+
+    # Кто именно поставил подпись (нажал "Согласовать"/"Одобрить") —
+    # оставлено для возможных внутренних/админских нужд, но для
+    # ОТОБРАЖЕНИЯ в "Подписи" используется НЕ эта связь, а текстовый
+    # снимок ниже (viewed_by_snapshot) — должность и ФИО пользователя
+    # могут измениться со временем, а "Подписи" должны навсегда
+    # показывать, кем план был согласован именно в момент подписи.
+    viewed_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+
+    # Текстовый снимок "должность, ФИО" того, кто подтвердил этап — см.
+    # utils/plans.py::build_signer_snapshot. Ставится вместе с
+    # is_viewed/viewed_at в handle_approved_status (обычный флоу) и
+    # handle_admin_confirm_step (подтверждение администратором).
+    viewed_by_snapshot = db.Column(db.String(255), nullable=True)
+
+    # Когда и кем этап был отклонён ("Есть ошибки") — в отличие от
+    # is_viewed/viewed_at (которые остаются False/None при отклонении,
+    # этап так и не пройден), это отдельная пара полей специально для
+    # записи факта отклонения в "Подписи" (см. handle_error_status).
+    rejected_at = db.Column(db.DateTime, nullable=True)
+    rejected_by_snapshot = db.Column(db.String(255), nullable=True)
+
+    # Снимок данных разработчика плана (должность/ФИО/телефон/email) на
+    # МОМЕНТ конкретной отправки (handle_sent_status) — одинаков для всех
+    # строк одного cycle. Раньше строка "Разработчик плана" в "Подписи"
+    # бралась живым джойном через plan.user, поэтому если в тот же аккаунт
+    # позже зашёл другой человек и поменял ФИО/телефон в профиле — все
+    # прошлые отправки задним числом "переписывались" на новые данные.
+    sender_post = db.Column(db.String(255), nullable=True)
+    sender_name = db.Column(db.String(255), nullable=True)
+    sender_phone = db.Column(db.String(255), nullable=True)
+    sender_email = db.Column(db.String(255), nullable=True)
+
     plan = db.relationship("Plan", back_populates="approval_paths")
     organization = db.relationship("Organization", foreign_keys=[organization_id], back_populates="approval_paths")
+    viewed_by = db.relationship("User", foreign_keys=[viewed_by_user_id])
     
     STEP_TYPES = {
         'region': 'Региональное управление',
