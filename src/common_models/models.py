@@ -56,12 +56,6 @@ class User(db.Model, UserMixin):
     reset_password_token = db.Column(db.String(255), nullable=True)
     reset_password_expires = db.Column(db.DateTime, nullable=True)
 
-    # Кэш последней успешной периодической верификации аккаунта по ЭЦП
-    # (см. UserVerification) — денормализован сюда, чтобы гейт на
-    # согласовании/утверждении плана проверял один столбец без join'а к
-    # журналу верификаций на каждое такое действие.
-    ecp_verified_until = db.Column(db.DateTime, nullable=True)
-
     organization_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
 
     # Nullable временно — на момент добавления колонки исторические строки
@@ -80,40 +74,9 @@ class User(db.Model, UserMixin):
 
     activity = db.relationship('UserAppActivity', back_populates='user',
                                lazy=True, cascade='all, delete-orphan')
-    verifications = db.relationship('UserVerification', back_populates='user',
-                               lazy=True, cascade='all, delete-orphan')
-
-    def is_ecp_verified(self):
-        return bool(self.ecp_verified_until) and self.ecp_verified_until > current_utc_time()
 
     def __repr__(self):
         return f'<User {self.email}>'
-
-
-class UserVerification(db.Model):
-    """Журнал периодической верификации аккаунта по сертификату ЭЦП.
-
-    Отдельно от Plan-специфичной подписи при отправке плана (см.
-    enPlans website/ecp.py) — это именно подтверждение личности
-    владельца аккаунта, не привязанное к конкретному плану, и доступное
-    любому типу пользователя, не только согласующим/утверждающим.
-    """
-    __tablename__ = 'user_verifications'
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
-
-    verified_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
-    expires_at = db.Column(db.DateTime, nullable=False)
-
-    cert_subject = db.Column(db.String(500), nullable=True)
-    cert_unp = db.Column(db.String(20), nullable=True)
-    ip_address = db.Column(db.String(64), nullable=True)
-
-    user = db.relationship('User', back_populates='verifications')
-
-    def __repr__(self):
-        return f'<UserVerification user={self.user_id} expires_at={self.expires_at}>'
-
 
 class UserAppActivity(db.Model):
     """Первое появление и последняя активность пользователя в каждом приложении.
@@ -136,7 +99,6 @@ class UserAppActivity(db.Model):
 
     def __repr__(self):
         return f'<UserAppActivity user={self.user_id} app={self.app} last_active={self.last_active}>'
-
 
 class Organization(db.Model):
     __tablename__ = 'organization'
@@ -167,7 +129,6 @@ class Organization(db.Model):
     approval_paths = db.relationship("PlanApprovalPath", foreign_keys="PlanApprovalPath.organization_id", back_populates="organization")
     plans = db.relationship("Plan", foreign_keys="Plan.org_id", back_populates="organization")
 
-    
 class Region(db.Model):
     __tablename__ = 'regions'
     id = db.Column(db.Integer, primary_key=True)
@@ -427,6 +388,25 @@ class PlanTicket(db.Model):
     plan = db.relationship("Plan", back_populates="tickets")
     user = db.relationship("User", back_populates="tickets")
 
+    # Файл, прикреплённый к сообщению (например, согласовывающая
+    # организация прикладывает документ к тексту замечания при
+    # несогласовании) — attachment_filename — сгенерированное имя на диске,
+    # attachment_original_name — имя, которое видит пользователь.
+    attachment_filename = db.Column(db.String(255))
+    attachment_original_name = db.Column(db.String(400))
+    attachment_uploaded_at = db.Column(db.DateTime)
+
+    # Жёсткая привязка сообщения к конкретному этапу согласования (а не
+    # подбор "какое сообщение относится к какому этапу" по org_id+временному
+    # окну, как было раньше) — ставится в момент создания сообщения (см.
+    # audit_bp.create_ticket) на ТЕКУЩИЙ этап отправителя (если он сейчас
+    # на очереди). По этой связи "Подписи" однозначно находят замечание
+    # конкретного этапа (PlanApprovalPath.remark_ticket в utils/plans.py),
+    # а has_pending_review_message проверяет "есть ли уже сообщение именно
+    # по этому этапу" без эвристик.
+    approval_path_id = db.Column(db.Integer, db.ForeignKey('plan_approval_paths.id'), nullable=True)
+    approval_path = db.relationship("PlanApprovalPath")
+
 class Unit(db.Model):
     __tablename__ = 'units'
     id = db.Column(db.Integer, primary_key=True)
@@ -476,10 +456,6 @@ class Event(db.Model):
     is_econom = db.Column(db.Boolean)
     is_increase = db.Column(db.Boolean)
 
-    # ТЭО (технико-экономическое обоснование) — файл, прикреплённый к
-    # мероприятию. teo_filename — сгенерированное имя на диске (в
-    # TEO_UPLOAD_FOLDER), teo_original_name — имя, которое видит пользователь
-    # и под которым файл отдаётся на скачивание/просмотр.
     teo_filename = db.Column(db.String(255))
     teo_original_name = db.Column(db.String(400))
     teo_uploaded_at = db.Column(db.DateTime)
