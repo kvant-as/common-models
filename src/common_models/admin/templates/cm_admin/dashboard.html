@@ -26,7 +26,11 @@
   {% for panel in panels %}
     <div class="cm-section-head">
       <h2 class="cm-h2">{{ panel.title }}</h2>
-      {% if panel.rows %}<span class="cm-muted">{{ panel.rows|length }}</span>{% endif %}
+      {% if panel.more_url %}
+        <a class="cm-link" href="{{ panel.more_url }}">{{ panel.more_label or "Показать все" }}</a>
+      {% elif panel.rows %}
+        <span class="cm-muted">{{ panel.rows|length }}</span>
+      {% endif %}
     </div>
     <div class="cm-rows" style="margin-bottom: 32px;">
       {% for row in panel.rows %}
@@ -75,6 +79,9 @@
           status.textContent = msg;
           status.className = "cm-action-status " + (ok ? "is-ok" : "is-bad");
         }
+        var csrfMeta = document.querySelector('meta[name="csrf-token"]');
+        var csrfToken = csrfMeta ? csrfMeta.content : "";
+
         function runRequest(btn, req) {
           var orig = btn.textContent;
           btn.disabled = true;
@@ -83,7 +90,7 @@
           fetch(req.url, {
             method: req.method || "POST",
             credentials: "same-origin",
-            headers: { "X-Requested-With": "XMLHttpRequest" },
+            headers: { "X-Requested-With": "XMLHttpRequest", "X-CSRFToken": csrfToken },
             body: req.body,
           })
             .then(function (r) {

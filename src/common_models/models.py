@@ -8,38 +8,62 @@ from sqlalchemy import Numeric, UniqueConstraint
 
 db = SQLAlchemy()
 
+class Application(db.Model):
+    """Приложение на этой же БД (erespondentN, enPlans, ...). У каждого
+    аккаунта (User) теперь своя строка в одном конкретном приложении —
+    один и тот же email может быть зарегистрирован отдельно в каждом
+    приложении, это разные аккаунты с разными данными/ролями.
+
+    code — тот же короткий ключ, что уже используется в APP_NAME каждого
+    приложения и в UserAppActivity.app ('erespondentn' | 'enplans'), чтобы
+    приложение могло находить "себя" в этой таблице без доп. конфига.
+    """
+    __tablename__ = 'applications'
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(32), unique=True, nullable=False)
+    name = db.Column(db.String(200), nullable=False)
+
+    users = db.relationship('User', back_populates='application', lazy=True)
+
+    def __repr__(self):
+        return f'<Application {self.code}>'
+
 class User(db.Model, UserMixin):
     __tablename__ = 'user'
+    __table_args__ = (
+        # Email уникален только в рамках одного приложения — тот же человек
+        # регистрирует отдельный аккаунт в каждом приложении.
+        db.UniqueConstraint('email', 'application_id', name='uq_user_email_application'),
+    )
     id = db.Column(db.Integer, primary_key=True)
 
-    type = db.Column(db.String(13), default='Респондент')
     is_admin = db.Column(db.Boolean, default=False, server_default='false')
     is_auditor = db.Column(db.Boolean, default=False, server_default='false')
     is_approver = db.Column(db.Boolean, default=False, server_default='false')
     is_reader = db.Column(db.Boolean, default=False, server_default='false')
-    
-    email = db.Column(db.String(), unique=True)
-    fio = db.Column(db.String(100))
+
+    email = db.Column(db.String())
     last_name = db.Column(db.String())
     first_name = db.Column(db.String())
     patronymic_name = db.Column(db.String())
-    
+
     telephone = db.Column(db.String())
     post = db.Column(db.String())
-    
+
     password = db.Column(db.String())
     begin_time = db.Column(db.DateTime, default=current_utc_time)  # дата создания аккаунта
     # последняя активность теперь хранится по приложениям в UserAppActivity.last_active
     reset_password_token = db.Column(db.String(255), nullable=True)
     reset_password_expires = db.Column(db.DateTime, nullable=True)
 
-    # Кэш последней успешной периодической верификации аккаунта по ЭЦП
-    # (см. UserVerification) — денормализован сюда, чтобы гейт на
-    # согласовании/утверждении плана проверял один столбец без join'а к
-    # журналу верификаций на каждое такое действие.
-    ecp_verified_until = db.Column(db.DateTime, nullable=True)
-
     organization_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
+
+    # Nullable временно — на момент добавления колонки исторические строки
+    # ещё не разнесены по приложениям (см. backfill-кнопку в админке
+    # erespondentN). Новые строки должны проставлять application_id сразу
+    # при создании аккаунта.
+    application_id = db.Column(db.Integer, db.ForeignKey('applications.id'))
+    application = db.relationship('Application', back_populates='users')
 
     reports = db.relationship('Report', backref='user', lazy=True, cascade="all, delete-orphan")
     organization = db.relationship('Organization', back_populates='users')
@@ -50,40 +74,9 @@ class User(db.Model, UserMixin):
 
     activity = db.relationship('UserAppActivity', back_populates='user',
                                lazy=True, cascade='all, delete-orphan')
-    verifications = db.relationship('UserVerification', back_populates='user',
-                               lazy=True, cascade='all, delete-orphan')
-
-    def is_ecp_verified(self):
-        return bool(self.ecp_verified_until) and self.ecp_verified_until > current_utc_time()
 
     def __repr__(self):
         return f'<User {self.email}>'
-
-
-class UserVerification(db.Model):
-    """Журнал периодической верификации аккаунта по сертификату ЭЦП.
-
-    Отдельно от Plan-специфичной подписи при отправке плана (см.
-    enPlans website/ecp.py) — это именно подтверждение личности
-    владельца аккаунта, не привязанное к конкретному плану, и доступное
-    любому типу пользователя, не только согласующим/утверждающим.
-    """
-    __tablename__ = 'user_verifications'
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
-
-    verified_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
-    expires_at = db.Column(db.DateTime, nullable=False)
-
-    cert_subject = db.Column(db.String(500), nullable=True)
-    cert_unp = db.Column(db.String(20), nullable=True)
-    ip_address = db.Column(db.String(64), nullable=True)
-
-    user = db.relationship('User', back_populates='verifications')
-
-    def __repr__(self):
-        return f'<UserVerification user={self.user_id} expires_at={self.expires_at}>'
-
 
 class UserAppActivity(db.Model):
     """Первое появление и последняя активность пользователя в каждом приложении.
@@ -106,7 +99,6 @@ class UserAppActivity(db.Model):
 
     def __repr__(self):
         return f'<UserAppActivity user={self.user_id} app={self.app} last_active={self.last_active}>'
-
 
 class Organization(db.Model):
     __tablename__ = 'organization'
@@ -137,7 +129,6 @@ class Organization(db.Model):
     approval_paths = db.relationship("PlanApprovalPath", foreign_keys="PlanApprovalPath.organization_id", back_populates="organization")
     plans = db.relationship("Plan", foreign_keys="Plan.org_id", back_populates="organization")
 
-    
 class Region(db.Model):
     __tablename__ = 'regions'
     id = db.Column(db.Integer, primary_key=True)
@@ -280,9 +271,49 @@ class PlanApprovalPath(db.Model):
     is_viewed = db.Column(db.Boolean, default=False)
     viewed_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False)
-    
+
+    # Номер цикла отправки — раньше при каждой повторной отправке (после
+    # отмены/возврата на доработку) старые строки маршрута удалялись и
+    # вся история терялась. Теперь при новой отправке создаются новые
+    # строки со следующим cycle, а старые остаются как история (см.
+    # handle_sent_status / build_signature_cycles).
+    cycle = db.Column(db.Integer, nullable=False, default=1, server_default='1')
+
+    # Кто именно поставил подпись (нажал "Согласовать"/"Одобрить") —
+    # оставлено для возможных внутренних/админских нужд, но для
+    # ОТОБРАЖЕНИЯ в "Подписи" используется НЕ эта связь, а текстовый
+    # снимок ниже (viewed_by_snapshot) — должность и ФИО пользователя
+    # могут измениться со временем, а "Подписи" должны навсегда
+    # показывать, кем план был согласован именно в момент подписи.
+    viewed_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+
+    # Текстовый снимок "должность, ФИО" того, кто подтвердил этап — см.
+    # utils/plans.py::build_signer_snapshot. Ставится вместе с
+    # is_viewed/viewed_at в handle_approved_status (обычный флоу) и
+    # handle_admin_confirm_step (подтверждение администратором).
+    viewed_by_snapshot = db.Column(db.String(255), nullable=True)
+
+    # Когда и кем этап был отклонён ("Есть ошибки") — в отличие от
+    # is_viewed/viewed_at (которые остаются False/None при отклонении,
+    # этап так и не пройден), это отдельная пара полей специально для
+    # записи факта отклонения в "Подписи" (см. handle_error_status).
+    rejected_at = db.Column(db.DateTime, nullable=True)
+    rejected_by_snapshot = db.Column(db.String(255), nullable=True)
+
+    # Снимок данных разработчика плана (должность/ФИО/телефон/email) на
+    # МОМЕНТ конкретной отправки (handle_sent_status) — одинаков для всех
+    # строк одного cycle. Раньше строка "Разработчик плана" в "Подписи"
+    # бралась живым джойном через plan.user, поэтому если в тот же аккаунт
+    # позже зашёл другой человек и поменял ФИО/телефон в профиле — все
+    # прошлые отправки задним числом "переписывались" на новые данные.
+    sender_post = db.Column(db.String(255), nullable=True)
+    sender_name = db.Column(db.String(255), nullable=True)
+    sender_phone = db.Column(db.String(255), nullable=True)
+    sender_email = db.Column(db.String(255), nullable=True)
+
     plan = db.relationship("Plan", back_populates="approval_paths")
     organization = db.relationship("Organization", foreign_keys=[organization_id], back_populates="approval_paths")
+    viewed_by = db.relationship("User", foreign_keys=[viewed_by_user_id])
     
     STEP_TYPES = {
         'region': 'Региональное управление',
@@ -334,7 +365,7 @@ class Plan(db.Model):
     
     plan_type = db.Column(db.String(50), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    
+
     org_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
     tickets = db.relationship('PlanTicket', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     events = db.relationship('Event', back_populates='plan', lazy=True, cascade="all, delete-orphan")
@@ -356,6 +387,25 @@ class PlanTicket(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     plan = db.relationship("Plan", back_populates="tickets")
     user = db.relationship("User", back_populates="tickets")
+
+    # Файл, прикреплённый к сообщению (например, согласовывающая
+    # организация прикладывает документ к тексту замечания при
+    # несогласовании) — attachment_filename — сгенерированное имя на диске,
+    # attachment_original_name — имя, которое видит пользователь.
+    attachment_filename = db.Column(db.String(255))
+    attachment_original_name = db.Column(db.String(400))
+    attachment_uploaded_at = db.Column(db.DateTime)
+
+    # Жёсткая привязка сообщения к конкретному этапу согласования (а не
+    # подбор "какое сообщение относится к какому этапу" по org_id+временному
+    # окну, как было раньше) — ставится в момент создания сообщения (см.
+    # audit_bp.create_ticket) на ТЕКУЩИЙ этап отправителя (если он сейчас
+    # на очереди). По этой связи "Подписи" однозначно находят замечание
+    # конкретного этапа (PlanApprovalPath.remark_ticket в utils/plans.py),
+    # а has_pending_review_message проверяет "есть ли уже сообщение именно
+    # по этому этапу" без эвристик.
+    approval_path_id = db.Column(db.Integer, db.ForeignKey('plan_approval_paths.id'), nullable=True)
+    approval_path = db.relationship("PlanApprovalPath")
 
 class Unit(db.Model):
     __tablename__ = 'units'
@@ -405,7 +455,11 @@ class Event(db.Model):
     is_corrected = db.Column(db.Boolean, default=False)
     is_econom = db.Column(db.Boolean)
     is_increase = db.Column(db.Boolean)
-    
+
+    teo_filename = db.Column(db.String(255))
+    teo_original_name = db.Column(db.String(400))
+    teo_uploaded_at = db.Column(db.DateTime)
+
     order = db.Column(db.Integer, default=None)
     plan = db.relationship("Plan", back_populates="events")
     direction = db.relationship('Direction', backref='events', foreign_keys=[id_direction])
@@ -437,7 +491,9 @@ class Event(db.Model):
             'is_increase': self.is_increase,
             'is_double_effect': is_double_effect,
             'direction_code': self.direction.code if self.direction else None,
-            'direction_name': self.direction.name if self.direction else None
+            'direction_name': self.direction.name if self.direction else None,
+            'has_teo': bool(self.teo_filename),
+            'teo_original_name': self.teo_original_name
         }
 
 class Indicator(db.Model):

@@ -25,8 +25,8 @@
             {% if row|attr(name) %}<span class="cm-badge">{{ name }}</span>{% endif %}
           {% endfor %}
           <span class="cm-row-cells">
-            {% for name in ma.list_display %}
-              <span class="cm-cell"><i>{{ name }}:</i> {{ ma.cell(row, name) }}</span>
+            {% for name, label in ma.list_display %}
+              <span class="cm-cell"><i>{{ label }}:</i> {{ ma.cell(row, name) }}</span>
             {% endfor %}
           </span>
         </div>

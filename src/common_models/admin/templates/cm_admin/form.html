@@ -17,8 +17,20 @@
       <div class="cm-field {% if fv.error %}cm-field--err{% endif %}">
         <label for="f_{{ f.name }}">{{ f.label }}{% if f.required %} *{% endif %}</label>
 
-        {% if f.type == "bool" %}
+        {% if f.readonly %}
+          <div class="cm-field-readonly">{{ fv.value if fv.value is not none and fv.value != "" else "—" }}</div>
+
+        {% elif f.type == "bool" %}
           <input type="checkbox" id="f_{{ f.name }}" name="{{ f.name }}" {{ "checked" if fv.value }}>
+
+        {% elif f.type == "fk-search" %}
+          <div class="cm-fk-search" data-target-key="{{ fv.target_key or '' }}">
+            <input type="text" class="cm-fk-search-input" autocomplete="off"
+                   placeholder="Начните вводить название, ОКПО или УНП…"
+                   value="{{ fv.current_label }}">
+            <input type="hidden" id="f_{{ f.name }}" name="{{ f.name }}" value="{{ fv.value if fv.value is not none else '' }}">
+            <div class="cm-fk-search-results"></div>
+          </div>
 
         {% elif f.type == "text" %}
           <textarea id="f_{{ f.name }}" name="{{ f.name }}" rows="{{ f.rows }}">{{ fv.value or "" }}</textarea>
@@ -60,4 +72,83 @@
       <a class="cm-link" href="{{ url_for('cm_admin.list_view', key=ma.key) }}">Отмена</a>
     </div>
   </form>
+
+  <script>
+    // Поиск-комбобокс для полей type="fk-search" — ищет через тот же
+    // /_fk-search эндпоинт у ЛЮБОЙ зарегистрированной модели (переиспользует
+    // её же search=[...] из admin.py), текст в инпуте — только для показа,
+    // реальное значение хранится в соседнем hidden-инпуте.
+    (function () {
+      var SEARCH_URL = "{{ url_for('cm_admin.fk_search_view') }}";
+      var DEBOUNCE_MS = 250;
+
+      document.querySelectorAll('.cm-fk-search').forEach(function (box) {
+        var targetKey = box.dataset.targetKey;
+        var input = box.querySelector('.cm-fk-search-input');
+        var hidden = box.querySelector('input[type="hidden"]');
+        var results = box.querySelector('.cm-fk-search-results');
+        var timer = null;
+        var lastQuery = null;
+
+        function hide() {
+          results.classList.remove('cm-show');
+          results.innerHTML = '';
+        }
+
+        function selectItem(id, label) {
+          hidden.value = id;
+          input.value = label;
+          hide();
+        }
+
+        function render(items) {
+          results.innerHTML = '';
+          if (!items.length) {
+            var empty = document.createElement('div');
+            empty.className = 'cm-fk-search-empty';
+            empty.textContent = 'Ничего не найдено';
+            results.appendChild(empty);
+          } else {
+            items.forEach(function (item) {
+              var row = document.createElement('div');
+              row.className = 'cm-fk-search-item';
+              row.textContent = item.label;
+              row.addEventListener('mousedown', function (e) {
+                e.preventDefault();
+                selectItem(item.id, item.label);
+              });
+              results.appendChild(row);
+            });
+          }
+          results.classList.add('cm-show');
+        }
+
+        function search(term) {
+          if (!targetKey || term === lastQuery) return;
+          lastQuery = term;
+          fetch(SEARCH_URL + '?target=' + encodeURIComponent(targetKey) + '&q=' + encodeURIComponent(term))
+            .then(function (r) { return r.json(); })
+            .then(render)
+            .catch(hide);
+        }
+
+        input.addEventListener('input', function () {
+          hidden.value = '';
+          var term = input.value.trim();
+          clearTimeout(timer);
+          if (term.length < 2) { hide(); return; }
+          timer = setTimeout(function () { search(term); }, DEBOUNCE_MS);
+        });
+
+        input.addEventListener('focus', function () {
+          var term = input.value.trim();
+          if (term.length >= 2) search(term);
+        });
+
+        document.addEventListener('click', function (e) {
+          if (!box.contains(e.target)) hide();
+        });
+      });
+    })();
+  </script>
 {% endblock %}

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() if csrf_token is defined else '' }}">
   <title>{% block title %}{{ site.brand }} · Админка{% endblock %}</title>
 
   <script>
@@ -36,7 +37,11 @@
           <summary>{{ group }}</summary>
           <div class="cm-menu-list">
             {% for ma in items %}
-              <a href="{{ url_for('cm_admin.list_view', key=ma.key) }}">{{ ma.name }}</a>
+              {% if ma.is_link %}
+                <a href="{{ url_for(ma.endpoint) }}">{{ ma.name }}</a>
+              {% else %}
+                <a href="{{ url_for('cm_admin.list_view', key=ma.key) }}">{{ ma.name }}</a>
+              {% endif %}
             {% endfor %}
           </div>
         </details>
