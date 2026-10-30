@@ -50,6 +50,16 @@ class User(db.Model, UserMixin):
     telephone = db.Column(db.String())
     post = db.Column(db.String())
 
+    # Роль сотрудника внутри своей организации (независимо от is_admin/
+    # is_auditor/is_approver/is_reader — те про права в приложении, это —
+    # про место в иерархии организации-владельца organization_id).
+    # 'executor' | 'dept_head' | 'org_head'. Nullable — у ролей вне обычных
+    # организаций (админы и т.п.) это поле не нужно. Проставляется
+    # автоматически в 'org_head' при обычной регистрации (website.user.add_param)
+    # — тот, кто регистрирует организацию, становится её руководителем и
+    # дальше сам приглашает сотрудников (website.routes.views.invite_employee).
+    org_role = db.Column(db.String(30), nullable=True)
+
     password = db.Column(db.String())
     begin_time = db.Column(db.DateTime, default=current_utc_time)  # дата создания аккаунта
     # последняя активность теперь хранится по приложениям в UserAppActivity.last_active
@@ -365,6 +375,15 @@ class Plan(db.Model):
     
     plan_type = db.Column(db.String(50), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+
+    # Данные исполнителя, фактически готовившего план (кнопка «Разработчик
+    # плана») — сознательно ОТДЕЛЬНО от PlanApprovalPath.sender_* (это
+    # снимок данных отправителя/подписанта на момент конкретной внешней
+    # отправки, может быть другим человеком). Заполняется вручную, не
+    # обязаны совпадать с профилем user_id.
+    developer_name = db.Column(db.String(255), nullable=True)
+    developer_phone = db.Column(db.String(255), nullable=True)
+    developer_email = db.Column(db.String(255), nullable=True)
 
     org_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
     tickets = db.relationship('PlanTicket', back_populates='plan', lazy=True, cascade="all, delete-orphan")
