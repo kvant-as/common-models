@@ -77,7 +77,7 @@ class User(db.Model, UserMixin):
 
     reports = db.relationship('Report', backref='user', lazy=True, cascade="all, delete-orphan")
     organization = db.relationship('Organization', back_populates='users')
-    plans = db.relationship('Plan', back_populates='user', lazy=True, cascade="all, delete-orphan")
+    plans = db.relationship('Plan', foreign_keys='Plan.user_id', back_populates='user', lazy=True, cascade="all, delete-orphan")
     tickets = db.relationship('PlanTicket', back_populates='user', lazy=True)
     notifications = db.relationship('Notification', back_populates='user', lazy=True, cascade="all, delete-orphan")
     created_chats = db.relationship('Chat', back_populates='created_by', cascade='all, delete-orphan')
@@ -310,6 +310,15 @@ class PlanApprovalPath(db.Model):
     rejected_at = db.Column(db.DateTime, nullable=True)
     rejected_by_snapshot = db.Column(db.String(255), nullable=True)
 
+    # Текст замечания к этапу — раньше для внутреннего возврата (руководитель
+    # вернул план без подписи, не дойдя до внешнего маршрута) использовалось
+    # отдельное поле Plan.internal_return_reason, а для внешних отклонений —
+    # привязанный PlanTicket (path.remark_ticket, см. build_signature_cycles).
+    # Теперь это единое поле для step_type='signer': то же самое "Есть
+    # ошибки"/отклонение, что и у внешних этапов, просто без отдельного
+    # тикет-чата (внутреннее подписание с проверяющим чатом не связано).
+    remark = db.Column(db.String(500), nullable=True)
+
     # Снимок данных разработчика плана (должность/ФИО/телефон/email) на
     # МОМЕНТ конкретной отправки (handle_sent_status) — одинаков для всех
     # строк одного cycle. Раньше строка "Разработчик плана" в "Подписи"
@@ -321,14 +330,40 @@ class PlanApprovalPath(db.Model):
     sender_phone = db.Column(db.String(255), nullable=True)
     sender_email = db.Column(db.String(255), nullable=True)
 
+    # Внутренний цикл подписания РЕШЕНИЯ этого конкретного этапа ("Шаг 2"
+    # внутреннего подписания — тот же принцип, что и Plan.pending_signer_user_id
+    # из "Шага 1", только теперь на уровне самого этапа маршрута, а не
+    # плана): исполнитель этой организации выбирает решение (согласовать/
+    # не согласовать) и направляет его руководителю на подпись, но
+    # is_viewed/rejected_at/viewed_by_snapshot/rejected_by_snapshot
+    # (выше) проставляются только в момент ФАКТИЧЕСКОЙ отправки решения
+    # (см. plan_bp.py "/step/dispatch/"), не раньше.
+    pending_signer_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    is_signed = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
+    submitted_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    pending_decision = db.Column(db.String(20), nullable=True)
+
+    # Кто и когда подписал РЕШЕНИЕ (момент [Подписать]) — отдельно от
+    # viewed_by_snapshot/rejected_by_snapshot (момент [Отправить], т.е.
+    # фактической финализации): на практике один и тот же человек, но
+    # семантически это разные события, как internal_signed_* и дальнейший
+    # sender_* в Plan/handle_sent_status из "Шага 1".
+    signed_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    signed_at = db.Column(db.DateTime, nullable=True)
+    signed_by_snapshot = db.Column(db.String(255), nullable=True)
+
     plan = db.relationship("Plan", back_populates="approval_paths")
     organization = db.relationship("Organization", foreign_keys=[organization_id], back_populates="approval_paths")
     viewed_by = db.relationship("User", foreign_keys=[viewed_by_user_id])
+    pending_signer = db.relationship("User", foreign_keys=[pending_signer_user_id])
+    submitted_by = db.relationship("User", foreign_keys=[submitted_by_user_id])
+    signed_by = db.relationship("User", foreign_keys=[signed_by_user_id])
     
     STEP_TYPES = {
         'region': 'Региональное управление',
         'coordinator': 'Согласовывающая организация',
-        'approver': 'Утверждающая организация'
+        'approver': 'Утверждающая организация',
+        'signer': 'Внутреннее подписание'
     }
     
     @property
@@ -385,15 +420,59 @@ class Plan(db.Model):
     developer_phone = db.Column(db.String(255), nullable=True)
     developer_email = db.Column(db.String(255), nullable=True)
 
+    # Внутренний цикл подписания (Исполнитель выбирает маршрут и отправляет
+    # на подпись руководителю; тот подписывает — пока мок-ЭЦП — и только
+    # после этого план реально уходит во внешний маршрут). pending_signer_user_id
+    # сам по себе означает "план в цикле, заблокирован на редактирование" —
+    # NULL = обычная редакция, план никуда не направлен. is_signed различает
+    # состояние ВНУТРИ цикла: False — ещё ждёт подписи (видно [Подписать]/
+    # [Вернуть на доработку]), True — подписан, ждёт реальной отправки
+    # (видно [Отправить на согласование]).
+    pending_signer_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    is_signed = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
+    submitted_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    internal_signed_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    internal_signed_at = db.Column(db.DateTime, nullable=True)
+    internal_signed_by_snapshot = db.Column(db.String(255), nullable=True)
+    # Маршрут (согласующие/утверждающая), выбранный на шагах 1-3 отправки,
+    # сохраняется здесь до фактической внешней отправки — к тому моменту
+    # клиентское JS-состояние визарда уже недоступно (другой человек/сессия).
+    pending_coordinator_ids = db.Column(db.String(500), nullable=True)
+    pending_approver_id = db.Column(db.Integer, nullable=True)
+
+    # Версионирование: при отклонении (handle_error_status) план
+    # замораживается "как есть" отдельной строкой-снимком (своя копия
+    # IndicatorUsage/Event/PlanColumnConfig, свой token) — см.
+    # utils/plans.py::create_plan_snapshot. snapshot_of_plan_id = NULL на
+    # "живой" редактируемой строке; у снимка указывает на неё. Список
+    # снимков конкретного живого плана — обычным запросом
+    # (Plan.query.filter_by(snapshot_of_plan_id=...)), без обратного
+    # relationship — самоссылающийся cascade/delete-orphan на Plan тут
+    # не нужен и только всё усложнил бы.
+    snapshot_of_plan_id = db.Column(db.Integer, db.ForeignKey('plans.id'), nullable=True)
+    snapshot_at = db.Column(db.DateTime, nullable=True)
+    snapshot_of = db.relationship('Plan', remote_side=[id], foreign_keys=[snapshot_of_plan_id])
+
     org_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
     tickets = db.relationship('PlanTicket', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     events = db.relationship('Event', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     indicators_usage = db.relationship('IndicatorUsage', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     column_configs = db.relationship('PlanColumnConfig', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     approval_paths = db.relationship('PlanApprovalPath', back_populates='plan', lazy=True, cascade="all, delete-orphan")
-    
-    user = db.relationship("User", back_populates="plans")
+
+    user = db.relationship("User", foreign_keys=[user_id], back_populates="plans")
     organization = db.relationship("Organization", foreign_keys=[org_id], back_populates="plans")
+
+    pending_signer = db.relationship("User", foreign_keys=[pending_signer_user_id])
+    submitted_by = db.relationship("User", foreign_keys=[submitted_by_user_id])
+    internal_signed_by = db.relationship("User", foreign_keys=[internal_signed_by_user_id])
+
+    @property
+    def is_historical(self):
+        """True для замороженного снимка (см. выше) — план доступен только
+        для просмотра, редактирование/смена статуса запрещены (см.
+        historical_forbidden в website/routes/views.py)."""
+        return self.snapshot_of_plan_id is not None
 
 class PlanTicket(db.Model):
     __tablename__ = 'Plan_tickets'
