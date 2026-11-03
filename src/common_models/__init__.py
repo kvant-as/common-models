@@ -12,7 +12,7 @@ from .models import (
     Message, Report, Version_report, Ticket,
     DirUnit, DirProduct, Sections, News,
 
-    Notification, PlanApprovalPath, PlanColumnConfig, Plan,
+    Notification, PlanApprovalPath, PlanColumnConfig, PlanExecutor, Plan,
     PlanTicket, Unit, Direction, Event, Indicator, IndicatorUsage,
     StatPlan, StatPlanValue, ChatMessage, Chat,
 )
@@ -30,7 +30,7 @@ __all__ = [
     'Message', 'Report', 'Version_report', 'Ticket',
     'DirUnit', 'DirProduct', 'Sections', 'News',
 
-    'Notification', 'PlanApprovalPath', 'PlanColumnConfig', 'Plan',
+    'Notification', 'PlanApprovalPath', 'PlanColumnConfig', 'PlanExecutor', 'Plan',
     'PlanTicket', 'Unit', 'Direction', 'Event', 'Indicator', 'IndicatorUsage',
     'StatPlan', 'StatPlanValue', 'ChatMessage', 'Chat',
 

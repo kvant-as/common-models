@@ -41,6 +41,11 @@ class User(db.Model, UserMixin):
     is_auditor = db.Column(db.Boolean, default=False, server_default='false')
     is_approver = db.Column(db.Boolean, default=False, server_default='false')
     is_reader = db.Column(db.Boolean, default=False, server_default='false')
+    # Прошёл проверку ЭЦП на последнем шаге регистрации (website.user.add_param)
+    # — только такой аккаунт блокирует повторную регистрацию на ту же
+    # организацию; при успешной верификации все прежние (неверифицированные)
+    # аккаунты этой организации удаляются вместе со всеми их данными.
+    is_verified = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
 
     email = db.Column(db.String())
     last_name = db.Column(db.String())
@@ -130,6 +135,7 @@ class Organization(db.Model):
     is_coordinator = db.Column(db.Boolean, default=False, server_default='false')
     is_approver = db.Column(db.Boolean, default=False, server_default='false')
     is_region_management = db.Column(db.Boolean, default=False, server_default='false')
+    is_energy_department = db.Column(db.Boolean, default=False, server_default='false')
     
     region = db.relationship("Region", back_populates="organizations")
     ministry = db.relationship("Ministry", back_populates="organizations")
@@ -382,6 +388,26 @@ class PlanColumnConfig(db.Model):
     
     plan = db.relationship("Plan", back_populates="column_configs")
 
+class PlanExecutor(db.Model):
+    """Список «Ответственных исполнителей» плана — кто фактически его
+    составлял/заполнял. Раньше это был только один человек (Plan.user_id,
+    создатель), теперь к нему можно добавить ещё одного сотрудника той же
+    организации (исполнителя или руководителя структурного подразделения,
+    не руководителя организации — он не занимается заполнением), см.
+    website/routes/plan_bp.py (add_plan_executor/remove_plan_executor).
+    На старых планах (до этой таблицы) список пуст — шаблон в этом
+    случае сам подставляет Plan.user как единственную запись для
+    отображения (см. plan_actions.html)."""
+    __tablename__ = 'plan_executors'
+    id = db.Column(db.Integer, primary_key=True)
+    plan_id = db.Column(db.Integer, db.ForeignKey('plans.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    added_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
+
+    plan = db.relationship('Plan', back_populates='executors')
+    user = db.relationship('User')
+
+
 class Plan(db.Model):
     __tablename__ = 'plans'
     id = db.Column(db.Integer, primary_key=True)
@@ -458,6 +484,7 @@ class Plan(db.Model):
     events = db.relationship('Event', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     indicators_usage = db.relationship('IndicatorUsage', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     column_configs = db.relationship('PlanColumnConfig', back_populates='plan', lazy=True, cascade="all, delete-orphan")
+    executors = db.relationship('PlanExecutor', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     approval_paths = db.relationship('PlanApprovalPath', back_populates='plan', lazy=True, cascade="all, delete-orphan")
 
     user = db.relationship("User", foreign_keys=[user_id], back_populates="plans")
