@@ -65,6 +65,13 @@ class User(db.Model, UserMixin):
     # дальше сам приглашает сотрудников (website.routes.views.invite_employee).
     org_role = db.Column(db.String(30), nullable=True)
 
+    @property
+    def is_org_manager(self):
+        """Руководитель организации или его заместитель — везде в приложении
+        у них одинаковые права (блокировка редактирования содержимого плана,
+        право приглашать сотрудников, кандидат на утверждающую подпись)."""
+        return self.org_role in ('org_head', 'org_head_deputy')
+
     password = db.Column(db.String())
     begin_time = db.Column(db.DateTime, default=current_utc_time)  # дата создания аккаунта
     # последняя активность теперь хранится по приложениям в UserAppActivity.last_active
@@ -316,14 +323,18 @@ class PlanApprovalPath(db.Model):
     rejected_at = db.Column(db.DateTime, nullable=True)
     rejected_by_snapshot = db.Column(db.String(255), nullable=True)
 
-    # Текст замечания к этапу — раньше для внутреннего возврата (руководитель
-    # вернул план без подписи, не дойдя до внешнего маршрута) использовалось
-    # отдельное поле Plan.internal_return_reason, а для внешних отклонений —
-    # привязанный PlanTicket (path.remark_ticket, см. build_signature_cycles).
-    # Теперь это единое поле для step_type='signer': то же самое "Есть
-    # ошибки"/отклонение, что и у внешних этапов, просто без отдельного
-    # тикет-чата (внутреннее подписание с проверяющим чатом не связано).
-    remark = db.Column(db.String(500), nullable=True)
+    # Единственное замечание к этапу (причина возврата/отклонения) —
+    # прямая ссылка на PlanTicket вместо вычисляемого поиска "последнего
+    # несистемного тикета с этим approval_path_id" (как было раньше, см.
+    # историю: path.remark_ticket в build_signature_cycles). Проставляется
+    # в step_internal_return/handle_error_status — весь текст и имя
+    # вложенного файла (если есть) хранятся на самом тикете, здесь только
+    # ссылка. Живой чат согласования (tickets_container/create_ticket) по
+    # прежнему может содержать НЕСКОЛЬКО сообщений на один этап — к нему
+    # эта связь отношения не имеет, она только про "то самое" замечание,
+    # которое показывается в столбце "Замечания" таблицы "Подписи".
+    ticket_id = db.Column(db.Integer, db.ForeignKey('Plan_tickets.id'), nullable=True)
+    ticket = db.relationship('PlanTicket', foreign_keys=[ticket_id])
 
     # Снимок данных разработчика плана (должность/ФИО/телефон/email) на
     # МОМЕНТ конкретной отправки (handle_sent_status) — одинаков для всех
@@ -358,13 +369,27 @@ class PlanApprovalPath(db.Model):
     signed_at = db.Column(db.DateTime, nullable=True)
     signed_by_snapshot = db.Column(db.String(255), nullable=True)
 
+    # Шаг ВНУТРИ организации-разработчика (цепочка submit_for_signature/
+    # forward_internal_signature/internal_sign до реальной внешней
+    # отправки, см. plan_bp.py) — та же таблица, что и внешние организации
+    # (регион/согласующие/утверждающая), но organization_id = сама
+    # plan.org_id, step_type='signer', и is_viewed=True сразу при
+    # создании (чтобы не путаться с "непройденным этапом" внешнего
+    # маршрута). signed_by_user_id/signed_at/signed_by_snapshot выше —
+    # то же самое "кто и когда отметился" на этом шаге. forwarded_to_user_id
+    # не NULL — направил дальше без ЭЦП ("Одобрил"); NULL — подписал
+    # мок-ЭЦП и сам отправил (финальное звено цепочки, "Направлен").
+    is_internal = db.Column(db.Boolean, nullable=False, default=False, server_default='false')
+    forwarded_to_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+
     plan = db.relationship("Plan", back_populates="approval_paths")
     organization = db.relationship("Organization", foreign_keys=[organization_id], back_populates="approval_paths")
     viewed_by = db.relationship("User", foreign_keys=[viewed_by_user_id])
     pending_signer = db.relationship("User", foreign_keys=[pending_signer_user_id])
     submitted_by = db.relationship("User", foreign_keys=[submitted_by_user_id])
     signed_by = db.relationship("User", foreign_keys=[signed_by_user_id])
-    
+    forwarded_to = db.relationship("User", foreign_keys=[forwarded_to_user_id])
+
     STEP_TYPES = {
         'region': 'Региональное управление',
         'coordinator': 'Согласовывающая организация',
@@ -404,6 +429,21 @@ class PlanExecutor(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     added_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
 
+    # "Разработчик плана" — максимум один исполнитель из этого же списка
+    # может быть им отмечен (website.routes.plan_bp::set_plan_developer —
+    # назначение всегда СМЕНА, не добавление: при простановке True у одной
+    # строки оно сбрасывается у всех остальных executors этого плана).
+    # Раньше это были Plan.developer_name/developer_phone/developer_email
+    # (свободный текст, никак не привязанный к реальному аккаунту) —
+    # теперь это снимок данных РЕАЛЬНОГО пользователя из списка
+    # исполнителей, сделанный в момент назначения, поэтому последующее
+    # изменение его профиля не меняет то, что показано как "разработчик"
+    # в истории согласования (та же причина, что у PlanApprovalPath.sender_*).
+    is_developer = db.Column(db.Boolean, default=False, server_default='false')
+    developer_name = db.Column(db.String(255), nullable=True)
+    developer_phone = db.Column(db.String(255), nullable=True)
+    developer_email = db.Column(db.String(255), nullable=True)
+
     plan = db.relationship('Plan', back_populates='executors')
     user = db.relationship('User')
 
@@ -437,14 +477,10 @@ class Plan(db.Model):
     plan_type = db.Column(db.String(50), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
 
-    # Данные исполнителя, фактически готовившего план (кнопка «Разработчик
-    # плана») — сознательно ОТДЕЛЬНО от PlanApprovalPath.sender_* (это
-    # снимок данных отправителя/подписанта на момент конкретной внешней
-    # отправки, может быть другим человеком). Заполняется вручную, не
-    # обязаны совпадать с профилем user_id.
-    developer_name = db.Column(db.String(255), nullable=True)
-    developer_phone = db.Column(db.String(255), nullable=True)
-    developer_email = db.Column(db.String(255), nullable=True)
+    # "Разработчик плана" теперь живёт на PlanExecutor (is_developer +
+    # снимок developer_name/phone/email) — один из списка «Ответственных
+    # исполнителей», а не свободный текст, никак не привязанный к
+    # аккаунту. См. website.routes.plan_bp::set_plan_developer.
 
     # Внутренний цикл подписания (Исполнитель выбирает маршрут и отправляет
     # на подпись руководителю; тот подписывает — пока мок-ЭЦП — и только
@@ -505,7 +541,6 @@ class PlanTicket(db.Model):
     __tablename__ = 'Plan_tickets'
     id = db.Column(db.Integer, primary_key=True)
     begin_time = db.Column(db.DateTime)
-    luck = db.Column(db.Boolean, default=False)
     is_system = db.Column(db.Boolean, default=False)
     note = db.Column(db.String(500), nullable=False)
     plan_id = db.Column(db.Integer, db.ForeignKey('plans.id'))
@@ -530,7 +565,7 @@ class PlanTicket(db.Model):
     # а has_pending_review_message проверяет "есть ли уже сообщение именно
     # по этому этапу" без эвристик.
     approval_path_id = db.Column(db.Integer, db.ForeignKey('plan_approval_paths.id'), nullable=True)
-    approval_path = db.relationship("PlanApprovalPath")
+    approval_path = db.relationship("PlanApprovalPath", foreign_keys=[approval_path_id])
 
 class Unit(db.Model):
     __tablename__ = 'units'
