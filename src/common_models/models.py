@@ -382,6 +382,23 @@ class PlanApprovalPath(db.Model):
     is_internal = db.Column(db.Boolean, nullable=False, default=False, server_default='false')
     forwarded_to_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
 
+    # То же самое is_internal=True, но для истории "Шага 2" ВНУТРИ уже
+    # внешней организации (регион/согласующая/утверждающая) — исполнитель
+    # направил решение, руководитель подразделения переслал без подписи,
+    # руководитель подписал, или вернул на доработку (см. plan_bp.py
+    # step_submit_for_signature/step_forward_signature/step_internal_sign/
+    # step_internal_return). Эти строки — чисто для отображения в "Подписи"
+    # (build_signature_cycles прикрепляет их к "своему" официальному шагу
+    # по совпадению step_order), на прохождение маршрута не влияют: сам
+    # официальный шаг (is_internal=False, тот же step_order) как и раньше
+    # остаётся единственным, что проверяют get_current_review_path и
+    # handle_approved_status/handle_error_status. log_action — одно из
+    # 'submitted_approved' | 'submitted_error' | 'forwarded' | 'signed' |
+    # 'returned'; для строк Шага 1 (is_internal=True, organization_id =
+    # сама организация-разработчик) не используется (там достаточно
+    # forwarded_to_user_id, см. выше).
+    log_action = db.Column(db.String(20), nullable=True)
+
     plan = db.relationship("Plan", back_populates="approval_paths")
     organization = db.relationship("Organization", foreign_keys=[organization_id], back_populates="approval_paths")
     viewed_by = db.relationship("User", foreign_keys=[viewed_by_user_id])
