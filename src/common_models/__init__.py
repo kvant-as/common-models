@@ -15,6 +15,7 @@ from .models import (
     Notification, PlanApprovalPath, PlanColumnConfig, PlanExecutor, Plan,
     PlanTicket, Unit, Direction, Event, Indicator, IndicatorUsage,
     StatPlan, StatPlanValue, ChatMessage, Chat,
+    Role, user_roles,
 )
 from .activity import touch_user_activity, get_app_last_active, count_online
 from .applications import get_current_application, get_current_application_id
@@ -33,6 +34,7 @@ __all__ = [
     'Notification', 'PlanApprovalPath', 'PlanColumnConfig', 'PlanExecutor', 'Plan',
     'PlanTicket', 'Unit', 'Direction', 'Event', 'Indicator', 'IndicatorUsage',
     'StatPlan', 'StatPlanValue', 'ChatMessage', 'Chat',
+    'Role', 'user_roles',
 
     'touch_user_activity', 'get_app_last_active', 'count_online',
     'get_current_application', 'get_current_application_id',

@@ -4,20 +4,12 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
 from .timeutils import current_utc_time
 from sqlalchemy.orm import relationship, backref
-from sqlalchemy import Numeric, UniqueConstraint
+from sqlalchemy import Numeric, UniqueConstraint, select
+from sqlalchemy.ext.hybrid import hybrid_property
 
 db = SQLAlchemy()
 
 class Application(db.Model):
-    """Приложение на этой же БД (erespondentN, enPlans, ...). У каждого
-    аккаунта (User) теперь своя строка в одном конкретном приложении —
-    один и тот же email может быть зарегистрирован отдельно в каждом
-    приложении, это разные аккаунты с разными данными/ролями.
-
-    code — тот же короткий ключ, что уже используется в APP_NAME каждого
-    приложения и в UserAppActivity.app ('erespondentn' | 'enplans'), чтобы
-    приложение могло находить "себя" в этой таблице без доп. конфига.
-    """
     __tablename__ = 'applications'
     id = db.Column(db.Integer, primary_key=True)
     code = db.Column(db.String(32), unique=True, nullable=False)
@@ -31,20 +23,10 @@ class Application(db.Model):
 class User(db.Model, UserMixin):
     __tablename__ = 'user'
     __table_args__ = (
-        # Email уникален только в рамках одного приложения — тот же человек
-        # регистрирует отдельный аккаунт в каждом приложении.
         db.UniqueConstraint('email', 'application_id', name='uq_user_email_application'),
     )
     id = db.Column(db.Integer, primary_key=True)
 
-    is_admin = db.Column(db.Boolean, default=False, server_default='false')
-    is_auditor = db.Column(db.Boolean, default=False, server_default='false')
-    is_approver = db.Column(db.Boolean, default=False, server_default='false')
-    is_reader = db.Column(db.Boolean, default=False, server_default='false')
-    # Прошёл проверку ЭЦП на последнем шаге регистрации (website.user.add_param)
-    # — только такой аккаунт блокирует повторную регистрацию на ту же
-    # организацию; при успешной верификации все прежние (неверифицированные)
-    # аккаунты этой организации удаляются вместе со всеми их данными.
     is_verified = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
 
     email = db.Column(db.String())
@@ -55,35 +37,87 @@ class User(db.Model, UserMixin):
     telephone = db.Column(db.String())
     post = db.Column(db.String())
 
-    # Роль сотрудника внутри своей организации (независимо от is_admin/
-    # is_auditor/is_approver/is_reader — те про права в приложении, это —
-    # про место в иерархии организации-владельца organization_id).
-    # 'executor' | 'dept_head' | 'org_head'. Nullable — у ролей вне обычных
-    # организаций (админы и т.п.) это поле не нужно. Проставляется
-    # автоматически в 'org_head' при обычной регистрации (website.user.add_param)
-    # — тот, кто регистрирует организацию, становится её руководителем и
-    # дальше сам приглашает сотрудников (website.routes.views.invite_employee).
-    org_role = db.Column(db.String(30), nullable=True)
+    roles = db.relationship('Role', secondary='user_roles', back_populates='users')
+
+    @hybrid_property
+    def org_role(self):
+        role = next((r for r in self.roles if r.is_org_role), None)
+        return role.code if role else None
+
+    @org_role.expression
+    def org_role(cls):
+        return (
+            select(Role.code)
+            .select_from(user_roles)
+            .join(Role, Role.id == user_roles.c.role_id)
+            .where(user_roles.c.user_id == cls.id, Role.is_org_role == True)
+            .correlate(cls)
+            .scalar_subquery()
+        )
+
+    @org_role.setter
+    def org_role(self, value):
+        self.roles = [r for r in self.roles if not r.is_org_role]
+        if value:
+            role = Role.query.filter_by(code=value, is_org_role=True).first()
+            if role:
+                self.roles.append(role)
 
     @property
     def is_org_manager(self):
-        """Руководитель организации или его заместитель — везде в приложении
-        у них одинаковые права (блокировка редактирования содержимого плана,
-        право приглашать сотрудников, кандидат на утверждающую подпись)."""
         return self.org_role in ('org_head', 'org_head_deputy')
 
+    @property
+    def is_admin(self):
+        return any(r.code == 'admin' for r in self.roles)
+
+    @is_admin.setter
+    def is_admin(self, value):
+        role = Role.query.filter_by(code='admin').first()
+        if not role:
+            return
+        if value:
+            if role not in self.roles:
+                self.roles.append(role)
+        else:
+            self.roles = [r for r in self.roles if r.code != 'admin']
+
+    @property
+    def is_reader(self):
+        return any(r.code == 'reader' for r in self.roles)
+
+    @is_reader.setter
+    def is_reader(self, value):
+        role = Role.query.filter_by(code='reader').first()
+        if not role:
+            return
+        if value:
+            if role not in self.roles:
+                self.roles.append(role)
+        else:
+            self.roles = [r for r in self.roles if r.code != 'reader']
+
+    @property
+    def has_auditor_access(self):
+        return bool(self.organization and (
+            self.organization.is_coordinator or self.organization.is_region_management
+        ))
+
+    @property
+    def has_approver_access(self):
+        return bool(self.organization and self.organization.is_approver)
+
+    @property
+    def is_region_auditor(self):
+        return bool(self.organization and self.organization.is_region_management)
+
     password = db.Column(db.String())
-    begin_time = db.Column(db.DateTime, default=current_utc_time)  # дата создания аккаунта
-    # последняя активность теперь хранится по приложениям в UserAppActivity.last_active
+    begin_time = db.Column(db.DateTime, default=current_utc_time)
     reset_password_token = db.Column(db.String(255), nullable=True)
     reset_password_expires = db.Column(db.DateTime, nullable=True)
 
     organization_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
 
-    # Nullable временно — на момент добавления колонки исторические строки
-    # ещё не разнесены по приложениям (см. backfill-кнопку в админке
-    # erespondentN). Новые строки должны проставлять application_id сразу
-    # при создании аккаунта.
     application_id = db.Column(db.Integer, db.ForeignKey('applications.id'))
     application = db.relationship('Application', back_populates='users')
 
@@ -100,12 +134,28 @@ class User(db.Model, UserMixin):
     def __repr__(self):
         return f'<User {self.email}>'
 
-class UserAppActivity(db.Model):
-    """Первое появление и последняя активность пользователя в каждом приложении.
 
-    Одна строка на пару (user, app). Обновляется через
-    ``common_models.touch_user_activity`` из каждого приложения.
-    """
+user_roles = db.Table(
+    'user_roles',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('role_id', db.Integer, db.ForeignKey('roles.id'), primary_key=True),
+)
+
+
+class Role(db.Model):
+    __tablename__ = 'roles'
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(30), unique=True, nullable=False)
+    label = db.Column(db.String(255), nullable=False)
+    is_org_role = db.Column(db.Boolean, nullable=False, default=False, server_default='false')
+
+    users = db.relationship('User', secondary=user_roles, back_populates='roles')
+
+    def __repr__(self):
+        return f'<Role {self.code}>'
+
+
+class UserAppActivity(db.Model):
     __tablename__ = 'user_app_activity'
     __table_args__ = (
         db.UniqueConstraint('user_id', 'app', name='uq_user_app_activity'),
@@ -113,7 +163,7 @@ class UserAppActivity(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
-    app = db.Column(db.String(32), nullable=False)  # 'enplans' | 'erespondentn'
+    app = db.Column(db.String(32), nullable=False)
     first_seen = db.Column(db.DateTime, nullable=False, default=current_utc_time)
     last_active = db.Column(db.DateTime, nullable=False, default=current_utc_time)
 
@@ -130,9 +180,6 @@ class Organization(db.Model):
     full_name = db.Column(db.String())
     okpo = db.Column(db.String, unique=True)
     ynp = db.Column(db.String(), nullable=True)
-    # для организаций, заведённых до этой колонки, останется NULL — так и
-    # задумано: у них нет достоверной даты создания, и они не должны
-    # попадать в подсчёты "новых за месяц" (см. enPlans views.begin_page)
     created_at = db.Column(db.DateTime, nullable=True, default=current_utc_time)
 
     region_id = db.Column(db.Integer, db.ForeignKey('regions.id'))
@@ -181,7 +228,6 @@ class News(db.Model):
     
     created_time = db.Column(db.DateTime, nullable=False, default=current_utc_time)
 
-# ====================== ERESPONDENTN
 
 class Message(db.Model):
     __tablename__ = 'message'
@@ -269,7 +315,6 @@ class Sections(db.Model):
     note = db.Column(db.String(200))
     product = relationship("DirProduct", foreign_keys=[id_product], backref="sections")
 
-# ====================== ENPLANS
 
 class Notification(db.Model):
     __tablename__ = 'notifications'
@@ -295,108 +340,35 @@ class PlanApprovalPath(db.Model):
     viewed_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False)
 
-    # Номер цикла отправки — раньше при каждой повторной отправке (после
-    # отмены/возврата на доработку) старые строки маршрута удалялись и
-    # вся история терялась. Теперь при новой отправке создаются новые
-    # строки со следующим cycle, а старые остаются как история (см.
-    # handle_sent_status / build_signature_cycles).
     cycle = db.Column(db.Integer, nullable=False, default=1, server_default='1')
 
-    # Кто именно поставил подпись (нажал "Согласовать"/"Одобрить") —
-    # оставлено для возможных внутренних/админских нужд, но для
-    # ОТОБРАЖЕНИЯ в "Подписи" используется НЕ эта связь, а текстовый
-    # снимок ниже (viewed_by_snapshot) — должность и ФИО пользователя
-    # могут измениться со временем, а "Подписи" должны навсегда
-    # показывать, кем план был согласован именно в момент подписи.
     viewed_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
 
-    # Текстовый снимок "должность, ФИО" того, кто подтвердил этап — см.
-    # utils/plans.py::build_signer_snapshot. Ставится вместе с
-    # is_viewed/viewed_at в handle_approved_status (обычный флоу) и
-    # handle_admin_confirm_step (подтверждение администратором).
     viewed_by_snapshot = db.Column(db.String(255), nullable=True)
 
-    # Когда и кем этап был отклонён ("Есть ошибки") — в отличие от
-    # is_viewed/viewed_at (которые остаются False/None при отклонении,
-    # этап так и не пройден), это отдельная пара полей специально для
-    # записи факта отклонения в "Подписи" (см. handle_error_status).
     rejected_at = db.Column(db.DateTime, nullable=True)
     rejected_by_snapshot = db.Column(db.String(255), nullable=True)
 
-    # Единственное замечание к этапу (причина возврата/отклонения) —
-    # прямая ссылка на PlanTicket вместо вычисляемого поиска "последнего
-    # несистемного тикета с этим approval_path_id" (как было раньше, см.
-    # историю: path.remark_ticket в build_signature_cycles). Проставляется
-    # в step_internal_return/handle_error_status — весь текст и имя
-    # вложенного файла (если есть) хранятся на самом тикете, здесь только
-    # ссылка. Живой чат согласования (tickets_container/create_ticket) по
-    # прежнему может содержать НЕСКОЛЬКО сообщений на один этап — к нему
-    # эта связь отношения не имеет, она только про "то самое" замечание,
-    # которое показывается в столбце "Замечания" таблицы "Подписи".
     ticket_id = db.Column(db.Integer, db.ForeignKey('Plan_tickets.id'), nullable=True)
     ticket = db.relationship('PlanTicket', foreign_keys=[ticket_id])
 
-    # Снимок данных разработчика плана (должность/ФИО/телефон/email) на
-    # МОМЕНТ конкретной отправки (handle_sent_status) — одинаков для всех
-    # строк одного cycle. Раньше строка "Разработчик плана" в "Подписи"
-    # бралась живым джойном через plan.user, поэтому если в тот же аккаунт
-    # позже зашёл другой человек и поменял ФИО/телефон в профиле — все
-    # прошлые отправки задним числом "переписывались" на новые данные.
     sender_post = db.Column(db.String(255), nullable=True)
     sender_name = db.Column(db.String(255), nullable=True)
     sender_phone = db.Column(db.String(255), nullable=True)
     sender_email = db.Column(db.String(255), nullable=True)
 
-    # Внутренний цикл подписания РЕШЕНИЯ этого конкретного этапа ("Шаг 2"
-    # внутреннего подписания — тот же принцип, что и Plan.pending_signer_user_id
-    # из "Шага 1", только теперь на уровне самого этапа маршрута, а не
-    # плана): исполнитель этой организации выбирает решение (согласовать/
-    # не согласовать) и направляет его руководителю на подпись, но
-    # is_viewed/rejected_at/viewed_by_snapshot/rejected_by_snapshot
-    # (выше) проставляются только в момент ФАКТИЧЕСКОЙ отправки решения
-    # (см. plan_bp.py "/step/dispatch/"), не раньше.
     pending_signer_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     is_signed = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
     submitted_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     pending_decision = db.Column(db.String(20), nullable=True)
 
-    # Кто и когда подписал РЕШЕНИЕ (момент [Подписать]) — отдельно от
-    # viewed_by_snapshot/rejected_by_snapshot (момент [Отправить], т.е.
-    # фактической финализации): на практике один и тот же человек, но
-    # семантически это разные события, как internal_signed_* и дальнейший
-    # sender_* в Plan/handle_sent_status из "Шага 1".
     signed_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     signed_at = db.Column(db.DateTime, nullable=True)
     signed_by_snapshot = db.Column(db.String(255), nullable=True)
 
-    # Шаг ВНУТРИ организации-разработчика (цепочка submit_for_signature/
-    # forward_internal_signature/internal_sign до реальной внешней
-    # отправки, см. plan_bp.py) — та же таблица, что и внешние организации
-    # (регион/согласующие/утверждающая), но organization_id = сама
-    # plan.org_id, step_type='signer', и is_viewed=True сразу при
-    # создании (чтобы не путаться с "непройденным этапом" внешнего
-    # маршрута). signed_by_user_id/signed_at/signed_by_snapshot выше —
-    # то же самое "кто и когда отметился" на этом шаге. forwarded_to_user_id
-    # не NULL — направил дальше без ЭЦП ("Одобрил"); NULL — подписал
-    # мок-ЭЦП и сам отправил (финальное звено цепочки, "Направлен").
     is_internal = db.Column(db.Boolean, nullable=False, default=False, server_default='false')
     forwarded_to_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
 
-    # То же самое is_internal=True, но для истории "Шага 2" ВНУТРИ уже
-    # внешней организации (регион/согласующая/утверждающая) — исполнитель
-    # направил решение, руководитель подразделения переслал без подписи,
-    # руководитель подписал, или вернул на доработку (см. plan_bp.py
-    # step_submit_for_signature/step_forward_signature/step_internal_sign/
-    # step_internal_return). Эти строки — чисто для отображения в "Подписи"
-    # (build_signature_cycles прикрепляет их к "своему" официальному шагу
-    # по совпадению step_order), на прохождение маршрута не влияют: сам
-    # официальный шаг (is_internal=False, тот же step_order) как и раньше
-    # остаётся единственным, что проверяют get_current_review_path и
-    # handle_approved_status/handle_error_status. log_action — одно из
-    # 'submitted_approved' | 'submitted_error' | 'forwarded' | 'signed' |
-    # 'returned'; для строк Шага 1 (is_internal=True, organization_id =
-    # сама организация-разработчик) не используется (там достаточно
-    # forwarded_to_user_id, см. выше).
     log_action = db.Column(db.String(20), nullable=True)
 
     plan = db.relationship("Plan", back_populates="approval_paths")
@@ -431,31 +403,12 @@ class PlanColumnConfig(db.Model):
     plan = db.relationship("Plan", back_populates="column_configs")
 
 class PlanExecutor(db.Model):
-    """Список «Ответственных исполнителей» плана — кто фактически его
-    составлял/заполнял. Раньше это был только один человек (Plan.user_id,
-    создатель), теперь к нему можно добавить ещё одного сотрудника той же
-    организации (исполнителя или руководителя структурного подразделения,
-    не руководителя организации — он не занимается заполнением), см.
-    website/routes/plan_bp.py (add_plan_executor/remove_plan_executor).
-    На старых планах (до этой таблицы) список пуст — шаблон в этом
-    случае сам подставляет Plan.user как единственную запись для
-    отображения (см. plan_actions.html)."""
     __tablename__ = 'plan_executors'
     id = db.Column(db.Integer, primary_key=True)
     plan_id = db.Column(db.Integer, db.ForeignKey('plans.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     added_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
 
-    # "Разработчик плана" — максимум один исполнитель из этого же списка
-    # может быть им отмечен (website.routes.plan_bp::set_plan_developer —
-    # назначение всегда СМЕНА, не добавление: при простановке True у одной
-    # строки оно сбрасывается у всех остальных executors этого плана).
-    # Раньше это были Plan.developer_name/developer_phone/developer_email
-    # (свободный текст, никак не привязанный к реальному аккаунту) —
-    # теперь это снимок данных РЕАЛЬНОГО пользователя из списка
-    # исполнителей, сделанный в момент назначения, поэтому последующее
-    # изменение его профиля не меняет то, что показано как "разработчик"
-    # в истории согласования (та же причина, что у PlanApprovalPath.sender_*).
     is_developer = db.Column(db.Boolean, default=False, server_default='false')
     developer_name = db.Column(db.String(255), nullable=True)
     developer_phone = db.Column(db.String(255), nullable=True)
@@ -494,40 +447,16 @@ class Plan(db.Model):
     plan_type = db.Column(db.String(50), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
 
-    # "Разработчик плана" теперь живёт на PlanExecutor (is_developer +
-    # снимок developer_name/phone/email) — один из списка «Ответственных
-    # исполнителей», а не свободный текст, никак не привязанный к
-    # аккаунту. См. website.routes.plan_bp::set_plan_developer.
 
-    # Внутренний цикл подписания (Исполнитель выбирает маршрут и отправляет
-    # на подпись руководителю; тот подписывает — пока мок-ЭЦП — и только
-    # после этого план реально уходит во внешний маршрут). pending_signer_user_id
-    # сам по себе означает "план в цикле, заблокирован на редактирование" —
-    # NULL = обычная редакция, план никуда не направлен. is_signed различает
-    # состояние ВНУТРИ цикла: False — ещё ждёт подписи (видно [Подписать]/
-    # [Вернуть на доработку]), True — подписан, ждёт реальной отправки
-    # (видно [Отправить на согласование]).
     pending_signer_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     is_signed = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
     submitted_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     internal_signed_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     internal_signed_at = db.Column(db.DateTime, nullable=True)
     internal_signed_by_snapshot = db.Column(db.String(255), nullable=True)
-    # Маршрут (согласующие/утверждающая), выбранный на шагах 1-3 отправки,
-    # сохраняется здесь до фактической внешней отправки — к тому моменту
-    # клиентское JS-состояние визарда уже недоступно (другой человек/сессия).
     pending_coordinator_ids = db.Column(db.String(500), nullable=True)
     pending_approver_id = db.Column(db.Integer, nullable=True)
 
-    # Версионирование: при отклонении (handle_error_status) план
-    # замораживается "как есть" отдельной строкой-снимком (своя копия
-    # IndicatorUsage/Event/PlanColumnConfig, свой token) — см.
-    # utils/plans.py::create_plan_snapshot. snapshot_of_plan_id = NULL на
-    # "живой" редактируемой строке; у снимка указывает на неё. Список
-    # снимков конкретного живого плана — обычным запросом
-    # (Plan.query.filter_by(snapshot_of_plan_id=...)), без обратного
-    # relationship — самоссылающийся cascade/delete-orphan на Plan тут
-    # не нужен и только всё усложнил бы.
     snapshot_of_plan_id = db.Column(db.Integer, db.ForeignKey('plans.id'), nullable=True)
     snapshot_at = db.Column(db.DateTime, nullable=True)
     snapshot_of = db.relationship('Plan', remote_side=[id], foreign_keys=[snapshot_of_plan_id])
@@ -549,9 +478,6 @@ class Plan(db.Model):
 
     @property
     def is_historical(self):
-        """True для замороженного снимка (см. выше) — план доступен только
-        для просмотра, редактирование/смена статуса запрещены (см.
-        historical_forbidden в website/routes/views.py)."""
         return self.snapshot_of_plan_id is not None
 
 class PlanTicket(db.Model):
@@ -565,22 +491,10 @@ class PlanTicket(db.Model):
     plan = db.relationship("Plan", back_populates="tickets")
     user = db.relationship("User", back_populates="tickets")
 
-    # Файл, прикреплённый к сообщению (например, согласовывающая
-    # организация прикладывает документ к тексту замечания при
-    # несогласовании) — attachment_filename — сгенерированное имя на диске,
-    # attachment_original_name — имя, которое видит пользователь.
     attachment_filename = db.Column(db.String(255))
     attachment_original_name = db.Column(db.String(400))
     attachment_uploaded_at = db.Column(db.DateTime)
 
-    # Жёсткая привязка сообщения к конкретному этапу согласования (а не
-    # подбор "какое сообщение относится к какому этапу" по org_id+временному
-    # окну, как было раньше) — ставится в момент создания сообщения (см.
-    # audit_bp.create_ticket) на ТЕКУЩИЙ этап отправителя (если он сейчас
-    # на очереди). По этой связи "Подписи" однозначно находят замечание
-    # конкретного этапа (PlanApprovalPath.remark_ticket в utils/plans.py),
-    # а has_pending_review_message проверяет "есть ли уже сообщение именно
-    # по этому этапу" без эвристик.
     approval_path_id = db.Column(db.Integer, db.ForeignKey('plan_approval_paths.id'), nullable=True)
     approval_path = db.relationship("PlanApprovalPath", foreign_keys=[approval_path_id])
 
@@ -688,14 +602,8 @@ class Indicator(db.Model):
     Group = db.Column(db.Float)
     RowN = db.Column(db.Integer)
 
-    # Показатель считается автоматически (update_plan_indicators) —
-    # его нельзя удалить/отредактировать вручную в таблице показателей.
     is_computed = db.Column(db.Boolean, default=False, nullable=False)
-    # Рост значения относительно импортированного отчёта — это хорошо
-    # (True, зелёным) или плохо (False/NULL, красным) для этого показателя.
     higher_is_better = db.Column(db.Boolean, nullable=True)
-    # "Прочие" показатели: при добавлении нужно выбрать категорию
-    # топлива и ввести своё наименование, разрешено добавлять несколько.
     is_custom = db.Column(db.Boolean, default=False, nullable=False)
 
     DateStart = db.Column(db.DateTime, default=None)
@@ -753,7 +661,7 @@ class StatPlan(db.Model):
     __tablename__ = "stat_plans"
     id = db.Column(db.Integer, primary_key=True)
     organization_id = db.Column(db.Integer, db.ForeignKey("organization.id"), nullable=False)
-    type = db.Column(db.String(10), nullable=False)   # '12-tek' | '4-tek'
+    type = db.Column(db.String(10), nullable=False)
     year = db.Column(db.Integer, nullable=False)
     uploaded_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     uploaded_at = db.Column(db.DateTime)
@@ -823,13 +731,7 @@ class Chat(db.Model):
     __tablename__ = 'chats'
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=True)
-    # тип обращения, выбранный в виджете виртуального помощника: 'no-org',
-    # 'compl-plan', 'dif' ('Другое' — уходит живому администратору, без ИИ)
-    # или 'org-edit' (автоматическая переписка по изменению данных
-    # организации — ведёт бот-сценарий, см. routes/org_edit_bot.py)
     chat_type = db.Column(db.String(20), nullable=True)
-    # служебное состояние сценария бота (JSON-строка) — используется только
-    # автоматическими сценариями вроде 'org-edit'; для остальных типов пусто
     flow_state = db.Column(db.Text, nullable=True)
     created_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_by = db.relationship('User', foreign_keys=[created_by_id], back_populates='created_chats')
