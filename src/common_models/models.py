@@ -190,7 +190,18 @@ class Organization(db.Model):
     is_approver = db.Column(db.Boolean, default=False, server_default='false')
     is_region_management = db.Column(db.Boolean, default=False, server_default='false')
     is_energy_department = db.Column(db.Boolean, default=False, server_default='false')
-    
+
+    # Данные из ЕГР (egr.gov.by) по УНП — обновляются кнопкой «Обновить из
+    # ЕГР» (enPlans utils/egr.py). egr_status — состояние как в ЕГР
+    # («Действующий», «Ликвидирован», …), egr_status_kind — его тип для
+    # логики/отображения: active / liquidating / liquidated / bankrupt /
+    # unknown. egr_checked_at — когда последний раз сверялись.
+    short_name = db.Column(db.String(255), nullable=True)
+    legal_address = db.Column(db.String(500), nullable=True)
+    egr_status = db.Column(db.String(100), nullable=True)
+    egr_status_kind = db.Column(db.String(20), nullable=True)
+    egr_checked_at = db.Column(db.DateTime, nullable=True)
+
     region = db.relationship("Region", back_populates="organizations")
     ministry = db.relationship("Ministry", back_populates="organizations")
     users = db.relationship("User", back_populates="organization")
@@ -350,7 +361,12 @@ class PlanApprovalPath(db.Model):
     rejected_by_snapshot = db.Column(db.String(255), nullable=True)
 
     ticket_id = db.Column(db.Integer, db.ForeignKey('Plan_tickets.id'), nullable=True)
-    ticket = db.relationship('PlanTicket', foreign_keys=[ticket_id])
+    # PlanApprovalPath.ticket_id и PlanTicket.approval_path_id ссылаются
+    # ДРУГ НА ДРУГА — при удалении плана (каскад delete-orphan на обе
+    # таблицы, напр. из админ-панели) SQLAlchemy не может выбрать порядок
+    # DELETE и падает с CircularDependencyError. post_update разрывает цикл:
+    # ticket_id обнуляется отдельным UPDATE до удаления строк.
+    ticket = db.relationship('PlanTicket', foreign_keys=[ticket_id], post_update=True)
 
     sender_post = db.Column(db.String(255), nullable=True)
     sender_name = db.Column(db.String(255), nullable=True)
@@ -370,6 +386,18 @@ class PlanApprovalPath(db.Model):
     forwarded_to_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
 
     log_action = db.Column(db.String(20), nullable=True)
+
+    # Только у строки возврата на внутреннюю доработку (log_action=
+    # 'internal_returned'): маршрут, выбранный для вернутой попытки,
+    # "step_type:org_id,step_type:org_id" — см. enPlans plan_bp.internal_return.
+    route_snapshot = db.Column(db.String(255), nullable=True)
+
+    # Номер этапа внутри цикла: 1 — организация-разработчик, 2..N —
+    # организации маршрута по порядку. Подэтапы (действия внутри одной
+    # организации: исполнитель направил, руководитель подразделения
+    # согласовал, ...) имеют тот же stage, что и итоговый шаг этапа.
+    # NULL — служебная строка «План отправлен на доработку».
+    stage = db.Column(db.Integer, nullable=True)
 
     plan = db.relationship("Plan", back_populates="approval_paths")
     organization = db.relationship("Organization", foreign_keys=[organization_id], back_populates="approval_paths")
