@@ -4,20 +4,12 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
 from .timeutils import current_utc_time
 from sqlalchemy.orm import relationship, backref
-from sqlalchemy import Numeric, UniqueConstraint
+from sqlalchemy import Numeric, UniqueConstraint, select
+from sqlalchemy.ext.hybrid import hybrid_property
 
 db = SQLAlchemy()
 
 class Application(db.Model):
-    """Приложение на этой же БД (erespondentN, enPlans, ...). У каждого
-    аккаунта (User) теперь своя строка в одном конкретном приложении —
-    один и тот же email может быть зарегистрирован отдельно в каждом
-    приложении, это разные аккаунты с разными данными/ролями.
-
-    code — тот же короткий ключ, что уже используется в APP_NAME каждого
-    приложения и в UserAppActivity.app ('erespondentn' | 'enplans'), чтобы
-    приложение могло находить "себя" в этой таблице без доп. конфига.
-    """
     __tablename__ = 'applications'
     id = db.Column(db.Integer, primary_key=True)
     code = db.Column(db.String(32), unique=True, nullable=False)
@@ -31,16 +23,11 @@ class Application(db.Model):
 class User(db.Model, UserMixin):
     __tablename__ = 'user'
     __table_args__ = (
-        # Email уникален только в рамках одного приложения — тот же человек
-        # регистрирует отдельный аккаунт в каждом приложении.
         db.UniqueConstraint('email', 'application_id', name='uq_user_email_application'),
     )
     id = db.Column(db.Integer, primary_key=True)
 
-    is_admin = db.Column(db.Boolean, default=False, server_default='false')
-    is_auditor = db.Column(db.Boolean, default=False, server_default='false')
-    is_approver = db.Column(db.Boolean, default=False, server_default='false')
-    is_reader = db.Column(db.Boolean, default=False, server_default='false')
+    is_verified = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
 
     email = db.Column(db.String())
     last_name = db.Column(db.String())
@@ -50,24 +37,93 @@ class User(db.Model, UserMixin):
     telephone = db.Column(db.String())
     post = db.Column(db.String())
 
+    roles = db.relationship('Role', secondary='user_roles', back_populates='users')
+
+    @hybrid_property
+    def org_role(self):
+        role = next((r for r in self.roles if r.is_org_role), None)
+        return role.code if role else None
+
+    @org_role.expression
+    def org_role(cls):
+        return (
+            select(Role.code)
+            .select_from(user_roles)
+            .join(Role, Role.id == user_roles.c.role_id)
+            .where(user_roles.c.user_id == cls.id, Role.is_org_role == True)
+            .correlate(cls)
+            .scalar_subquery()
+        )
+
+    @org_role.setter
+    def org_role(self, value):
+        self.roles = [r for r in self.roles if not r.is_org_role]
+        if value:
+            role = Role.query.filter_by(code=value, is_org_role=True).first()
+            if role:
+                self.roles.append(role)
+
+    @property
+    def is_org_manager(self):
+        return self.org_role in ('org_head', 'org_head_deputy')
+
+    @property
+    def is_admin(self):
+        return any(r.code == 'admin' for r in self.roles)
+
+    @is_admin.setter
+    def is_admin(self, value):
+        role = Role.query.filter_by(code='admin').first()
+        if not role:
+            return
+        if value:
+            if role not in self.roles:
+                self.roles.append(role)
+        else:
+            self.roles = [r for r in self.roles if r.code != 'admin']
+
+    @property
+    def is_reader(self):
+        return any(r.code == 'reader' for r in self.roles)
+
+    @is_reader.setter
+    def is_reader(self, value):
+        role = Role.query.filter_by(code='reader').first()
+        if not role:
+            return
+        if value:
+            if role not in self.roles:
+                self.roles.append(role)
+        else:
+            self.roles = [r for r in self.roles if r.code != 'reader']
+
+    @property
+    def has_auditor_access(self):
+        return bool(self.organization and (
+            self.organization.is_coordinator or self.organization.is_region_management
+        ))
+
+    @property
+    def has_approver_access(self):
+        return bool(self.organization and self.organization.is_approver)
+
+    @property
+    def is_region_auditor(self):
+        return bool(self.organization and self.organization.is_region_management)
+
     password = db.Column(db.String())
-    begin_time = db.Column(db.DateTime, default=current_utc_time)  # дата создания аккаунта
-    # последняя активность теперь хранится по приложениям в UserAppActivity.last_active
+    begin_time = db.Column(db.DateTime, default=current_utc_time)
     reset_password_token = db.Column(db.String(255), nullable=True)
     reset_password_expires = db.Column(db.DateTime, nullable=True)
 
     organization_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
 
-    # Nullable временно — на момент добавления колонки исторические строки
-    # ещё не разнесены по приложениям (см. backfill-кнопку в админке
-    # erespondentN). Новые строки должны проставлять application_id сразу
-    # при создании аккаунта.
     application_id = db.Column(db.Integer, db.ForeignKey('applications.id'))
     application = db.relationship('Application', back_populates='users')
 
     reports = db.relationship('Report', backref='user', lazy=True, cascade="all, delete-orphan")
     organization = db.relationship('Organization', back_populates='users')
-    plans = db.relationship('Plan', back_populates='user', lazy=True, cascade="all, delete-orphan")
+    plans = db.relationship('Plan', foreign_keys='Plan.user_id', back_populates='user', lazy=True, cascade="all, delete-orphan")
     tickets = db.relationship('PlanTicket', back_populates='user', lazy=True)
     notifications = db.relationship('Notification', back_populates='user', lazy=True, cascade="all, delete-orphan")
     created_chats = db.relationship('Chat', back_populates='created_by', cascade='all, delete-orphan')
@@ -78,12 +134,28 @@ class User(db.Model, UserMixin):
     def __repr__(self):
         return f'<User {self.email}>'
 
-class UserAppActivity(db.Model):
-    """Первое появление и последняя активность пользователя в каждом приложении.
 
-    Одна строка на пару (user, app). Обновляется через
-    ``common_models.touch_user_activity`` из каждого приложения.
-    """
+user_roles = db.Table(
+    'user_roles',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('role_id', db.Integer, db.ForeignKey('roles.id'), primary_key=True),
+)
+
+
+class Role(db.Model):
+    __tablename__ = 'roles'
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(30), unique=True, nullable=False)
+    label = db.Column(db.String(255), nullable=False)
+    is_org_role = db.Column(db.Boolean, nullable=False, default=False, server_default='false')
+
+    users = db.relationship('User', secondary=user_roles, back_populates='roles')
+
+    def __repr__(self):
+        return f'<Role {self.code}>'
+
+
+class UserAppActivity(db.Model):
     __tablename__ = 'user_app_activity'
     __table_args__ = (
         db.UniqueConstraint('user_id', 'app', name='uq_user_app_activity'),
@@ -91,7 +163,7 @@ class UserAppActivity(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
-    app = db.Column(db.String(32), nullable=False)  # 'enplans' | 'erespondentn'
+    app = db.Column(db.String(32), nullable=False)
     first_seen = db.Column(db.DateTime, nullable=False, default=current_utc_time)
     last_active = db.Column(db.DateTime, nullable=False, default=current_utc_time)
 
@@ -108,9 +180,6 @@ class Organization(db.Model):
     full_name = db.Column(db.String())
     okpo = db.Column(db.String, unique=True)
     ynp = db.Column(db.String(), nullable=True)
-    # для организаций, заведённых до этой колонки, останется NULL — так и
-    # задумано: у них нет достоверной даты создания, и они не должны
-    # попадать в подсчёты "новых за месяц" (см. enPlans views.begin_page)
     created_at = db.Column(db.DateTime, nullable=True, default=current_utc_time)
 
     region_id = db.Column(db.Integer, db.ForeignKey('regions.id'))
@@ -120,7 +189,19 @@ class Organization(db.Model):
     is_coordinator = db.Column(db.Boolean, default=False, server_default='false')
     is_approver = db.Column(db.Boolean, default=False, server_default='false')
     is_region_management = db.Column(db.Boolean, default=False, server_default='false')
-    
+    is_energy_department = db.Column(db.Boolean, default=False, server_default='false')
+
+    # Данные из ЕГР (egr.gov.by) по УНП — обновляются кнопкой «Обновить из
+    # ЕГР» (enPlans utils/egr.py). egr_status — состояние как в ЕГР
+    # («Действующий», «Ликвидирован», …), egr_status_kind — его тип для
+    # логики/отображения: active / liquidating / liquidated / bankrupt /
+    # unknown. egr_checked_at — когда последний раз сверялись.
+    short_name = db.Column(db.String(255), nullable=True)
+    legal_address = db.Column(db.String(500), nullable=True)
+    egr_status = db.Column(db.String(100), nullable=True)
+    egr_status_kind = db.Column(db.String(20), nullable=True)
+    egr_checked_at = db.Column(db.DateTime, nullable=True)
+
     region = db.relationship("Region", back_populates="organizations")
     ministry = db.relationship("Ministry", back_populates="organizations")
     users = db.relationship("User", back_populates="organization")
@@ -158,7 +239,6 @@ class News(db.Model):
     
     created_time = db.Column(db.DateTime, nullable=False, default=current_utc_time)
 
-# ====================== ERESPONDENTN
 
 class Message(db.Model):
     __tablename__ = 'message'
@@ -246,7 +326,6 @@ class Sections(db.Model):
     note = db.Column(db.String(200))
     product = relationship("DirProduct", foreign_keys=[id_product], backref="sections")
 
-# ====================== ENPLANS
 
 class Notification(db.Model):
     __tablename__ = 'notifications'
@@ -272,53 +351,67 @@ class PlanApprovalPath(db.Model):
     viewed_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False)
 
-    # Номер цикла отправки — раньше при каждой повторной отправке (после
-    # отмены/возврата на доработку) старые строки маршрута удалялись и
-    # вся история терялась. Теперь при новой отправке создаются новые
-    # строки со следующим cycle, а старые остаются как история (см.
-    # handle_sent_status / build_signature_cycles).
     cycle = db.Column(db.Integer, nullable=False, default=1, server_default='1')
 
-    # Кто именно поставил подпись (нажал "Согласовать"/"Одобрить") —
-    # оставлено для возможных внутренних/админских нужд, но для
-    # ОТОБРАЖЕНИЯ в "Подписи" используется НЕ эта связь, а текстовый
-    # снимок ниже (viewed_by_snapshot) — должность и ФИО пользователя
-    # могут измениться со временем, а "Подписи" должны навсегда
-    # показывать, кем план был согласован именно в момент подписи.
     viewed_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
 
-    # Текстовый снимок "должность, ФИО" того, кто подтвердил этап — см.
-    # utils/plans.py::build_signer_snapshot. Ставится вместе с
-    # is_viewed/viewed_at в handle_approved_status (обычный флоу) и
-    # handle_admin_confirm_step (подтверждение администратором).
     viewed_by_snapshot = db.Column(db.String(255), nullable=True)
 
-    # Когда и кем этап был отклонён ("Есть ошибки") — в отличие от
-    # is_viewed/viewed_at (которые остаются False/None при отклонении,
-    # этап так и не пройден), это отдельная пара полей специально для
-    # записи факта отклонения в "Подписи" (см. handle_error_status).
     rejected_at = db.Column(db.DateTime, nullable=True)
     rejected_by_snapshot = db.Column(db.String(255), nullable=True)
 
-    # Снимок данных разработчика плана (должность/ФИО/телефон/email) на
-    # МОМЕНТ конкретной отправки (handle_sent_status) — одинаков для всех
-    # строк одного cycle. Раньше строка "Разработчик плана" в "Подписи"
-    # бралась живым джойном через plan.user, поэтому если в тот же аккаунт
-    # позже зашёл другой человек и поменял ФИО/телефон в профиле — все
-    # прошлые отправки задним числом "переписывались" на новые данные.
+    ticket_id = db.Column(db.Integer, db.ForeignKey('Plan_tickets.id'), nullable=True)
+    # PlanApprovalPath.ticket_id и PlanTicket.approval_path_id ссылаются
+    # ДРУГ НА ДРУГА — при удалении плана (каскад delete-orphan на обе
+    # таблицы, напр. из админ-панели) SQLAlchemy не может выбрать порядок
+    # DELETE и падает с CircularDependencyError. post_update разрывает цикл:
+    # ticket_id обнуляется отдельным UPDATE до удаления строк.
+    ticket = db.relationship('PlanTicket', foreign_keys=[ticket_id], post_update=True)
+
     sender_post = db.Column(db.String(255), nullable=True)
     sender_name = db.Column(db.String(255), nullable=True)
     sender_phone = db.Column(db.String(255), nullable=True)
     sender_email = db.Column(db.String(255), nullable=True)
 
+    pending_signer_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    is_signed = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
+    submitted_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    pending_decision = db.Column(db.String(20), nullable=True)
+
+    signed_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    signed_at = db.Column(db.DateTime, nullable=True)
+    signed_by_snapshot = db.Column(db.String(255), nullable=True)
+
+    is_internal = db.Column(db.Boolean, nullable=False, default=False, server_default='false')
+    forwarded_to_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+
+    log_action = db.Column(db.String(20), nullable=True)
+
+    # Только у строки возврата на внутреннюю доработку (log_action=
+    # 'internal_returned'): маршрут, выбранный для вернутой попытки,
+    # "step_type:org_id,step_type:org_id" — см. enPlans plan_bp.internal_return.
+    route_snapshot = db.Column(db.String(255), nullable=True)
+
+    # Номер этапа внутри цикла: 1 — организация-разработчик, 2..N —
+    # организации маршрута по порядку. Подэтапы (действия внутри одной
+    # организации: исполнитель направил, руководитель подразделения
+    # согласовал, ...) имеют тот же stage, что и итоговый шаг этапа.
+    # NULL — служебная строка «План отправлен на доработку».
+    stage = db.Column(db.Integer, nullable=True)
+
     plan = db.relationship("Plan", back_populates="approval_paths")
     organization = db.relationship("Organization", foreign_keys=[organization_id], back_populates="approval_paths")
     viewed_by = db.relationship("User", foreign_keys=[viewed_by_user_id])
-    
+    pending_signer = db.relationship("User", foreign_keys=[pending_signer_user_id])
+    submitted_by = db.relationship("User", foreign_keys=[submitted_by_user_id])
+    signed_by = db.relationship("User", foreign_keys=[signed_by_user_id])
+    forwarded_to = db.relationship("User", foreign_keys=[forwarded_to_user_id])
+
     STEP_TYPES = {
         'region': 'Региональное управление',
         'coordinator': 'Согласовывающая организация',
-        'approver': 'Утверждающая организация'
+        'approver': 'Утверждающая организация',
+        'signer': 'Внутреннее подписание'
     }
     
     @property
@@ -336,6 +429,22 @@ class PlanColumnConfig(db.Model):
     label = db.Column(db.String(50), nullable=False)
     
     plan = db.relationship("Plan", back_populates="column_configs")
+
+class PlanExecutor(db.Model):
+    __tablename__ = 'plan_executors'
+    id = db.Column(db.Integer, primary_key=True)
+    plan_id = db.Column(db.Integer, db.ForeignKey('plans.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    added_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
+
+    is_developer = db.Column(db.Boolean, default=False, server_default='false')
+    developer_name = db.Column(db.String(255), nullable=True)
+    developer_phone = db.Column(db.String(255), nullable=True)
+    developer_email = db.Column(db.String(255), nullable=True)
+
+    plan = db.relationship('Plan', back_populates='executors')
+    user = db.relationship('User')
+
 
 class Plan(db.Model):
     __tablename__ = 'plans'
@@ -366,21 +475,43 @@ class Plan(db.Model):
     plan_type = db.Column(db.String(50), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
 
+
+    pending_signer_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    is_signed = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
+    submitted_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    internal_signed_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    internal_signed_at = db.Column(db.DateTime, nullable=True)
+    internal_signed_by_snapshot = db.Column(db.String(255), nullable=True)
+    pending_coordinator_ids = db.Column(db.String(500), nullable=True)
+    pending_approver_id = db.Column(db.Integer, nullable=True)
+
+    snapshot_of_plan_id = db.Column(db.Integer, db.ForeignKey('plans.id'), nullable=True)
+    snapshot_at = db.Column(db.DateTime, nullable=True)
+    snapshot_of = db.relationship('Plan', remote_side=[id], foreign_keys=[snapshot_of_plan_id])
+
     org_id = db.Column(db.Integer, db.ForeignKey('organization.id'))
     tickets = db.relationship('PlanTicket', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     events = db.relationship('Event', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     indicators_usage = db.relationship('IndicatorUsage', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     column_configs = db.relationship('PlanColumnConfig', back_populates='plan', lazy=True, cascade="all, delete-orphan")
+    executors = db.relationship('PlanExecutor', back_populates='plan', lazy=True, cascade="all, delete-orphan")
     approval_paths = db.relationship('PlanApprovalPath', back_populates='plan', lazy=True, cascade="all, delete-orphan")
-    
-    user = db.relationship("User", back_populates="plans")
+
+    user = db.relationship("User", foreign_keys=[user_id], back_populates="plans")
     organization = db.relationship("Organization", foreign_keys=[org_id], back_populates="plans")
+
+    pending_signer = db.relationship("User", foreign_keys=[pending_signer_user_id])
+    submitted_by = db.relationship("User", foreign_keys=[submitted_by_user_id])
+    internal_signed_by = db.relationship("User", foreign_keys=[internal_signed_by_user_id])
+
+    @property
+    def is_historical(self):
+        return self.snapshot_of_plan_id is not None
 
 class PlanTicket(db.Model):
     __tablename__ = 'Plan_tickets'
     id = db.Column(db.Integer, primary_key=True)
     begin_time = db.Column(db.DateTime)
-    luck = db.Column(db.Boolean, default=False)
     is_system = db.Column(db.Boolean, default=False)
     note = db.Column(db.String(500), nullable=False)
     plan_id = db.Column(db.Integer, db.ForeignKey('plans.id'))
@@ -388,24 +519,12 @@ class PlanTicket(db.Model):
     plan = db.relationship("Plan", back_populates="tickets")
     user = db.relationship("User", back_populates="tickets")
 
-    # Файл, прикреплённый к сообщению (например, согласовывающая
-    # организация прикладывает документ к тексту замечания при
-    # несогласовании) — attachment_filename — сгенерированное имя на диске,
-    # attachment_original_name — имя, которое видит пользователь.
     attachment_filename = db.Column(db.String(255))
     attachment_original_name = db.Column(db.String(400))
     attachment_uploaded_at = db.Column(db.DateTime)
 
-    # Жёсткая привязка сообщения к конкретному этапу согласования (а не
-    # подбор "какое сообщение относится к какому этапу" по org_id+временному
-    # окну, как было раньше) — ставится в момент создания сообщения (см.
-    # audit_bp.create_ticket) на ТЕКУЩИЙ этап отправителя (если он сейчас
-    # на очереди). По этой связи "Подписи" однозначно находят замечание
-    # конкретного этапа (PlanApprovalPath.remark_ticket в utils/plans.py),
-    # а has_pending_review_message проверяет "есть ли уже сообщение именно
-    # по этому этапу" без эвристик.
     approval_path_id = db.Column(db.Integer, db.ForeignKey('plan_approval_paths.id'), nullable=True)
-    approval_path = db.relationship("PlanApprovalPath")
+    approval_path = db.relationship("PlanApprovalPath", foreign_keys=[approval_path_id])
 
 class Unit(db.Model):
     __tablename__ = 'units'
@@ -511,14 +630,8 @@ class Indicator(db.Model):
     Group = db.Column(db.Float)
     RowN = db.Column(db.Integer)
 
-    # Показатель считается автоматически (update_plan_indicators) —
-    # его нельзя удалить/отредактировать вручную в таблице показателей.
     is_computed = db.Column(db.Boolean, default=False, nullable=False)
-    # Рост значения относительно импортированного отчёта — это хорошо
-    # (True, зелёным) или плохо (False/NULL, красным) для этого показателя.
     higher_is_better = db.Column(db.Boolean, nullable=True)
-    # "Прочие" показатели: при добавлении нужно выбрать категорию
-    # топлива и ввести своё наименование, разрешено добавлять несколько.
     is_custom = db.Column(db.Boolean, default=False, nullable=False)
 
     DateStart = db.Column(db.DateTime, default=None)
@@ -576,7 +689,7 @@ class StatPlan(db.Model):
     __tablename__ = "stat_plans"
     id = db.Column(db.Integer, primary_key=True)
     organization_id = db.Column(db.Integer, db.ForeignKey("organization.id"), nullable=False)
-    type = db.Column(db.String(10), nullable=False)   # '12-tek' | '4-tek'
+    type = db.Column(db.String(10), nullable=False)
     year = db.Column(db.Integer, nullable=False)
     uploaded_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     uploaded_at = db.Column(db.DateTime)
@@ -646,13 +759,7 @@ class Chat(db.Model):
     __tablename__ = 'chats'
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=True)
-    # тип обращения, выбранный в виджете виртуального помощника: 'no-org',
-    # 'compl-plan', 'dif' ('Другое' — уходит живому администратору, без ИИ)
-    # или 'org-edit' (автоматическая переписка по изменению данных
-    # организации — ведёт бот-сценарий, см. routes/org_edit_bot.py)
     chat_type = db.Column(db.String(20), nullable=True)
-    # служебное состояние сценария бота (JSON-строка) — используется только
-    # автоматическими сценариями вроде 'org-edit'; для остальных типов пусто
     flow_state = db.Column(db.Text, nullable=True)
     created_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_by = db.relationship('User', foreign_keys=[created_by_id], back_populates='created_chats')
