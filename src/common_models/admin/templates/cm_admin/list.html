@@ -22,7 +22,7 @@
         <div class="cm-row-main">
           <span class="cm-row-title">{{ ma.title(row) }}</span>
           {% for name in ma.list_badges %}
-            {% if row|attr(name) %}<span class="cm-badge">{{ name }}</span>{% endif %}
+            {% if row|attr(name) %}<span class="cm-badge">{{ ma.badge_label(name) }}</span>{% endif %}
           {% endfor %}
           <span class="cm-row-cells">
             {% for name, label in ma.list_display %}

@@ -29,6 +29,8 @@ Key                                 Default                                Meani
 ``SESSION_TIMEOUT_DEFAULT``          ``timedelta(minutes=60)``              Idle window for everyone else.
 ``SESSION_PRIVILEGED_ATTRS``         ``('is_admin','is_auditor',
                                        'is_approver','is_reader')``         User flags that grant the long window.
+``SESSION_ROLE_LABELS``              ``(('is_admin','Администратор'),       Ordered (attr, label) pairs for the
+                                       ('is_auditor','Аудитор'), ...)``     role shown on the session card.
 ``SESSION_ACTIVITY_IGNORE_PREFIXES`` ``('/api','/_session','/_forms')``     Path prefixes that do NOT slide the window.
 ``SESSION_ACTIVITY_WRITE_INTERVAL``  ``45``                                 Min seconds between activity-row writes.
 ``SESSION_LOGIN_ENDPOINT``           ``views.login``                        Where to send a logged-out user.
@@ -80,6 +82,12 @@ SESSION_DURATION = timedelta(days=7)          # hard cap on the JWT cookie
 _TOKEN_RENEW_WITHIN = timedelta(days=1)       # re-issue the cookie when this close to exp
 _DEFAULT_PRIVILEGED_ATTRS = ("is_admin", "is_auditor", "is_approver", "is_reader")
 _DEFAULT_IGNORE_PREFIXES = ("/api", "/_session", "/_forms")
+_DEFAULT_ROLE_LABELS = (
+    ("is_admin", "Администратор"),
+    ("is_auditor", "Аудитор"),
+    ("is_approver", "Утверждающий"),
+    ("is_reader", "Читатель"),
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -247,14 +255,9 @@ def describe_device(ua_string):
 
 
 def _role_label(user):
-    if getattr(user, "is_admin", False):
-        return "Администратор"
-    if getattr(user, "is_auditor", False):
-        return "Аудитор"
-    if getattr(user, "is_approver", False):
-        return "Утверждающий"
-    if getattr(user, "is_reader", False):
-        return "Читатель"
+    for attr, label in _cfg("SESSION_ROLE_LABELS", _DEFAULT_ROLE_LABELS):
+        if getattr(user, attr, False):
+            return label
     return "Респондент"
 
 
