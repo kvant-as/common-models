@@ -179,6 +179,9 @@ class ModelAdmin:
             return self.list_format[name](obj)
         return _format_value(getattr(obj, name, None))
 
+    def badge_label(self, name):
+        return next((f.label for f in self.fields if f.name == name), name)
+
     def title(self, obj):
         return _smart_label(obj)
 
@@ -188,7 +191,19 @@ class ModelAdmin:
     def count(self):
         if self.stat_count:
             return self.stat_count()
-        return self.model.query.count()
+        q = self.model.query
+        if self.scope_query:
+            q = self.scope_query(q)
+        return q.count()
+
+    def get_obj(self, pk):
+        """Объект по первичному ключу — с учётом scope_query: запись вне
+        области модели (например, аккаунт другого приложения) недоступна
+        и по прямой ссылке."""
+        if not self.scope_query:
+            return db.session.get(self.model, pk)
+        pk_col = getattr(self.model, self.pk_name)
+        return self.scope_query(self.model.query).filter(pk_col == pk).first()
 
 
 # --------------------------------------------------------------------------- #
@@ -457,7 +472,7 @@ def create_view(key):
 def edit_view(key, pk):
     site = _site()
     ma = site.get(key)
-    obj = db.session.get(ma.model, pk) or abort(404)
+    obj = ma.get_obj(pk) or abort(404)
     if request.method == "POST" and not ma.can_edit:
         abort(403)
     return _edit(site, ma, obj=obj, creating=False)
@@ -469,7 +484,7 @@ def delete_view(key, pk):
     ma = site.get(key)
     if not ma.can_delete:
         abort(403)
-    obj = db.session.get(ma.model, pk) or abort(404)
+    obj = ma.get_obj(pk) or abort(404)
     try:
         db.session.delete(obj)
         db.session.commit()
