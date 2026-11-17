@@ -24,12 +24,19 @@ class User(db.Model, UserMixin):
     __tablename__ = 'user'
     __table_args__ = (
         db.UniqueConstraint('email', 'application_id', name='uq_user_email_application'),
+        db.UniqueConstraint('login', 'application_id', name='uq_user_login_application'),
     )
     id = db.Column(db.Integer, primary_key=True)
 
     is_verified = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
 
     email = db.Column(db.String())
+    login = db.Column(db.String(64), nullable=True)
+    is_cabinet_owner = db.Column(db.Boolean, nullable=False, default=False, server_default='false')
+    is_active = db.Column(db.Boolean, nullable=False, default=True, server_default='true')
+    deactivated_at = db.Column(db.DateTime, nullable=True)
+    department_id = db.Column(db.Integer, db.ForeignKey('departments.id', ondelete='SET NULL'), nullable=True)
+    department = db.relationship('Department', back_populates='users')
     last_name = db.Column(db.String())
     first_name = db.Column(db.String())
     patronymic_name = db.Column(db.String())
@@ -131,8 +138,43 @@ class User(db.Model, UserMixin):
     activity = db.relationship('UserAppActivity', back_populates='user',
                                lazy=True, cascade='all, delete-orphan')
 
+    @property
+    def full_name(self):
+        return ' '.join(p for p in (self.last_name, self.first_name, self.patronymic_name) if p)
+
+    @property
+    def contact_email(self):
+        """Почта организации: в enPlans у организации одна почта — она
+        стоит на учётной записи, зарегистрированной с ЭЦП; у сотрудников,
+        созданных ответственным за кабинет, своей почты нет."""
+        if self.email:
+            return self.email
+        if not self.organization_id:
+            return None
+        holder = User.query.filter(
+            User.organization_id == self.organization_id,
+            User.application_id == self.application_id,
+            User.email.isnot(None),
+        ).order_by(User.id).first()
+        return holder.email if holder else None
+
     def __repr__(self):
-        return f'<User {self.email}>'
+        return f'<User {self.email or self.login}>'
+
+
+class Department(db.Model):
+    """Справочник структурных подразделений — свой у каждой организации."""
+    __tablename__ = 'departments'
+    __table_args__ = (
+        db.UniqueConstraint('organization_id', 'name', name='uq_department_org_name'),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    organization_id = db.Column(db.Integer, db.ForeignKey('organization.id', ondelete='CASCADE'), nullable=False, index=True)
+    name = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
+
+    organization = db.relationship('Organization')
+    users = db.relationship('User', back_populates='department')
 
 
 user_roles = db.Table(
