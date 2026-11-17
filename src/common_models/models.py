@@ -324,6 +324,9 @@ class Sections(db.Model):
     Consumed_Total_Fact = db.Column(Numeric(scale=2))
     total_differents = db.Column(Numeric(scale=2))
     note = db.Column(db.String(200))
+    # Позиция строки в разделе, заданная пользователем перетаскиванием;
+    # NULL — порядок не задан (строка показывается по умолчанию, новые сверху).
+    sort_order = db.Column(db.Integer, nullable=True)
     product = relationship("DirProduct", foreign_keys=[id_product], backref="sections")
 
 
