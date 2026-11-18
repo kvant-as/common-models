@@ -214,6 +214,31 @@ class UserAppActivity(db.Model):
     def __repr__(self):
         return f'<UserAppActivity user={self.user_id} app={self.app} last_active={self.last_active}>'
 
+
+class UserAppDailyActivity(db.Model):
+    """Активность по дням: строка на пользователя, приложение и день.
+    ``ticks`` — сколько раз за день записана активность (не чаще раза в
+    минуту, см. touch_user_activity), то есть примерно минуты в приложении."""
+    __tablename__ = 'user_app_daily_activity'
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'app', 'day', name='uq_user_app_daily_activity'),
+        db.Index('ix_user_app_daily_activity_app_day', 'app', 'day'),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    app = db.Column(db.String(32), nullable=False)
+    day = db.Column(db.Date, nullable=False)
+    ticks = db.Column(db.Integer, nullable=False, default=1, server_default='1')
+    first_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
+    last_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
+
+    user = db.relationship('User', passive_deletes=True)
+
+    def __repr__(self):
+        return f'<UserAppDailyActivity user={self.user_id} app={self.app} day={self.day} ticks={self.ticks}>'
+
+
 class Organization(db.Model):
     __tablename__ = 'organization'
     id = db.Column(db.Integer, primary_key=True)
@@ -233,11 +258,6 @@ class Organization(db.Model):
     is_region_management = db.Column(db.Boolean, default=False, server_default='false')
     is_energy_department = db.Column(db.Boolean, default=False, server_default='false')
 
-    # Данные из ЕГР (egr.gov.by) по УНП — обновляются кнопкой «Обновить из
-    # ЕГР» (enPlans utils/egr.py). egr_status — состояние как в ЕГР
-    # («Действующий», «Ликвидирован», …), egr_status_kind — его тип для
-    # логики/отображения: active / liquidating / liquidated / bankrupt /
-    # unknown. egr_checked_at — когда последний раз сверялись.
     short_name = db.Column(db.String(255), nullable=True)
     legal_address = db.Column(db.String(500), nullable=True)
     egr_status = db.Column(db.String(100), nullable=True)
@@ -252,6 +272,7 @@ class Organization(db.Model):
     approval_paths = db.relationship("PlanApprovalPath", foreign_keys="PlanApprovalPath.organization_id", back_populates="organization")
     plans = db.relationship("Plan", foreign_keys="Plan.org_id", back_populates="organization")
 
+
 class Region(db.Model):
     __tablename__ = 'regions'
     id = db.Column(db.Integer, primary_key=True)
@@ -259,11 +280,13 @@ class Region(db.Model):
     name = db.Column(db.String(), nullable=False)
     organizations = db.relationship("Organization", back_populates="region")
     
+
 class Ministry(db.Model):
     __tablename__ = 'ministry'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False, unique=True)
     organizations = db.relationship('Organization', back_populates="ministry")
+
 
 class News(db.Model):
     __tablename__ = 'news'
@@ -271,10 +294,10 @@ class News(db.Model):
     title = db.Column(db.String(100))
     text = db.Column(db.String(4000))
     img_name = db.Column(db.String(255))
-    
-    is_erespondentn = db.Column(db.Boolean, default=False)
-    is_enplans = db.Column(db.Boolean, default=False)
-    
+
+    application_id = db.Column(db.Integer, db.ForeignKey('applications.id'), nullable=False, index=True)
+    application = db.relationship('Application')
+
     is_published = db.Column(db.Boolean, default=False)
     published_at = db.Column(db.DateTime, nullable=True)
     views_count = db.Column(db.Integer, default=0)
@@ -366,8 +389,7 @@ class Sections(db.Model):
     Consumed_Total_Fact = db.Column(Numeric(scale=2))
     total_differents = db.Column(Numeric(scale=2))
     note = db.Column(db.String(200))
-    # Позиция строки в разделе, заданная пользователем перетаскиванием;
-    # NULL — порядок не задан (строка показывается по умолчанию, новые сверху).
+
     sort_order = db.Column(db.Integer, nullable=True)
     product = relationship("DirProduct", foreign_keys=[id_product], backref="sections")
 
@@ -381,9 +403,11 @@ class Notification(db.Model):
     created_at = db.Column(db.DateTime)
     user = db.relationship('User', back_populates='notifications')
 
+
 def generate_static_token(length=20):
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for _ in range(length))
+
 
 class PlanApprovalPath(db.Model):
     __tablename__ = 'plan_approval_paths'
@@ -406,11 +430,6 @@ class PlanApprovalPath(db.Model):
     rejected_by_snapshot = db.Column(db.String(255), nullable=True)
 
     ticket_id = db.Column(db.Integer, db.ForeignKey('Plan_tickets.id'), nullable=True)
-    # PlanApprovalPath.ticket_id и PlanTicket.approval_path_id ссылаются
-    # ДРУГ НА ДРУГА — при удалении плана (каскад delete-orphan на обе
-    # таблицы, напр. из админ-панели) SQLAlchemy не может выбрать порядок
-    # DELETE и падает с CircularDependencyError. post_update разрывает цикл:
-    # ticket_id обнуляется отдельным UPDATE до удаления строк.
     ticket = db.relationship('PlanTicket', foreign_keys=[ticket_id], post_update=True)
 
     sender_post = db.Column(db.String(255), nullable=True)
@@ -431,17 +450,8 @@ class PlanApprovalPath(db.Model):
     forwarded_to_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
 
     log_action = db.Column(db.String(20), nullable=True)
-
-    # Только у строки возврата на внутреннюю доработку (log_action=
-    # 'internal_returned'): маршрут, выбранный для вернутой попытки,
-    # "step_type:org_id,step_type:org_id" — см. enPlans plan_bp.internal_return.
     route_snapshot = db.Column(db.String(255), nullable=True)
 
-    # Номер этапа внутри цикла: 1 — организация-разработчик, 2..N —
-    # организации маршрута по порядку. Подэтапы (действия внутри одной
-    # организации: исполнитель направил, руководитель подразделения
-    # согласовал, ...) имеют тот же stage, что и итоговый шаг этапа.
-    # NULL — служебная строка «План отправлен на доработку».
     stage = db.Column(db.Integer, nullable=True)
 
     plan = db.relationship("Plan", back_populates="approval_paths")
@@ -466,6 +476,7 @@ class PlanApprovalPath(db.Model):
     def __repr__(self):
         return f'<PlanApprovalPath plan_id={self.plan_id} step_order={self.step_order} type={self.step_type}>'
 
+
 class PlanColumnConfig(db.Model):
     __tablename__ = 'plan_column_configs'
     id = db.Column(db.Integer, primary_key=True)
@@ -474,6 +485,7 @@ class PlanColumnConfig(db.Model):
     label = db.Column(db.String(50), nullable=False)
     
     plan = db.relationship("Plan", back_populates="column_configs")
+
 
 class PlanExecutor(db.Model):
     __tablename__ = 'plan_executors'
@@ -519,7 +531,6 @@ class Plan(db.Model):
     
     plan_type = db.Column(db.String(50), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-
 
     pending_signer_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     is_signed = db.Column(db.Boolean, default=False, nullable=False, server_default='false')
@@ -729,7 +740,8 @@ class IndicatorUsage(db.Model):
             'CoeffToTut': self.get_coeff_for_year('current'),
             'name': self.indicator.name
         }
-        
+
+   
 class StatPlan(db.Model):
     __tablename__ = "stat_plans"
     id = db.Column(db.Integer, primary_key=True)
@@ -765,6 +777,7 @@ class StatPlan(db.Model):
                 return v.value
         return None
  
+
 class StatPlanValue(db.Model):
     __tablename__ = "stat_plan_values"
  
@@ -788,6 +801,7 @@ class StatPlanValue(db.Model):
     def __repr__(self):
         return f"<StatPlanValue row={self.row_code} col={self.column_code} val={self.value}>"
 
+
 class ChatMessage(db.Model):
     __tablename__ = 'chat_messages'
     id = db.Column(db.Integer, primary_key=True)
@@ -799,6 +813,7 @@ class ChatMessage(db.Model):
     
     def __repr__(self):
         return f'<Message {self.id} in chat {self.chat_id}>'
+
 
 class Chat(db.Model):
     __tablename__ = 'chats'

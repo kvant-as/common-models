@@ -23,8 +23,6 @@ common_models = [
     "templates/**/*.html",
     "migrations/*",
     "migrations/**/*",
-    "admin/templates/**/*.html",
-    "admin/static/**/*",
     "session_ui_assets/**/*",
     "forms_ui_assets/**/*",
     "static_assets/**/*",
