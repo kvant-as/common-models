@@ -348,6 +348,8 @@ class Ticket(db.Model):
     note = db.Column(db.String(500))
     version_report_id = db.Column(db.Integer, db.ForeignKey('version_report.id'))
     version_report = db.relationship("Version_report", back_populates="tickets")
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True, index=True)
+    user = db.relationship('User', foreign_keys=[user_id], passive_deletes=True)
 
 class DirUnit(db.Model):
     __tablename__ = 'DirUnit'
