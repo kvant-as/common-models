@@ -8,14 +8,14 @@ from .timeutils import (
 from .models import (
     db, UserMixin,
 
-    User, Application, UserAppActivity, Organization, Region, Ministry,
+    User, Application, UserAppActivity, UserAppDailyActivity, Organization, Region, Ministry,
     Message, Report, Version_report, Ticket,
     DirUnit, DirProduct, Sections, News,
 
     Notification, PlanApprovalPath, PlanColumnConfig, PlanExecutor, Plan,
     PlanTicket, Unit, Direction, Event, Indicator, IndicatorUsage,
     StatPlan, StatPlanValue, ChatMessage, Chat,
-    Role, user_roles,
+    Role, user_roles, Department,
 )
 from .activity import touch_user_activity, get_app_last_active, count_online
 from .applications import get_current_application, get_current_application_id
@@ -27,14 +27,14 @@ __all__ = [
 
     'db', 'UserMixin',
 
-    'User', 'Application', 'UserAppActivity', 'Organization', 'Region', 'Ministry',
+    'User', 'Application', 'UserAppActivity', 'UserAppDailyActivity', 'Organization', 'Region', 'Ministry',
     'Message', 'Report', 'Version_report', 'Ticket',
     'DirUnit', 'DirProduct', 'Sections', 'News',
 
     'Notification', 'PlanApprovalPath', 'PlanColumnConfig', 'PlanExecutor', 'Plan',
     'PlanTicket', 'Unit', 'Direction', 'Event', 'Indicator', 'IndicatorUsage',
     'StatPlan', 'StatPlanValue', 'ChatMessage', 'Chat',
-    'Role', 'user_roles',
+    'Role', 'user_roles', 'Department',
 
     'touch_user_activity', 'get_app_last_active', 'count_online',
     'get_current_application', 'get_current_application_id',

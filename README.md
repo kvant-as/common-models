@@ -11,7 +11,7 @@ Shared code for the kvant-as Flask apps (`enPlans`, `erespondentN`):
 | `common_models.activity` | `touch_user_activity(user_id, app)` — per-app first-seen / last-active |
 | `common_models.sessions` | idle-session JWT cookie + `session_required` guard, config-driven |
 | `common_models/migrations/` | the single Alembic history for the shared database |
-| `common_models.admin` | custom admin engine (`AdminSite`, `Field`); each app registers its own models |
+| — | admin engine moved to the separate `eres-admin` package |
 | `common_models/templates/` | shared Jinja templates (`macros/svg_icons.html`) |
 
 ## Install (editable, for local development)
@@ -141,38 +141,9 @@ If the shared database was previously built by `db.create_all()` (no
 `flask db stamp 9c35ff2f0fb4` (the pre-existing baseline), then
 `flask db upgrade`.
 
-## Admin (`common_models.admin`)
+## Admin
 
-A small custom admin (blueprint + generic list/create/edit/delete + Jinja
-templates + one CSS, light theme, accent colour per app) replaces Flask-Admin.
-The engine lives here; **each app owns its own registry** in `website/admin.py`:
+The admin panel engine moved to its own package, **eres-admin**
+(`D:\work\eres\eres-admin`). Each app keeps its registry in `website/admin.py`
+and imports `from eres_admin import AdminSite, Field`.
 
-```python
-from common_models.admin import AdminSite, Field as F
-
-site = AdminSite(brand="EnPlans", accent="#00798f", accent_2="#009bb6",
-                 site_endpoint="views.begin_page",
-                 login_endpoint="auth.login", logout_endpoint="auth.logout")
-
-site.register(User, name="Пользователи", group="Основные",
-              list_display=["id", "email", "fio", "organization", "last_active"],
-              list_badges=["is_admin", "is_auditor"],
-              search=["email", "fio"],
-              fields=[
-                  F("email", "Email", type="email", required=True),
-                  F("organization_id", "Организация", type="fk",
-                    target=Organization, target_label="full_name"),
-                  F("password", "Пароль", type="password", skip_if_blank=True,
-                    transform=generate_password_hash),
-              ])
-
-site.dashboard(greeting_attr="first_name", stats=["news", "plan", "user"],
-               recent="plan-ticket", recent_display=["begin_time", "note"])
-```
-
-Then in `create_app`: `from .admin import init_admin; init_admin(app)` (mounts
-at `/admin`, guarded by `current_user.is_admin`).
-
-`Field` types: `str · text · email · int · float · bool · date · datetime ·
-select · fk · password · file`. `readonly=True` on a model disables
-create/edit/delete (used for `UserAppActivity`).

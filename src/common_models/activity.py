@@ -16,7 +16,7 @@ break the request it is attached to.
 
 from datetime import timedelta
 
-from .models import db, UserAppActivity
+from .models import db, UserAppActivity, UserAppDailyActivity
 from .timeutils import current_utc_time
 from .logs import get_logger
 
@@ -50,6 +50,7 @@ def touch_user_activity(user_id, app, throttle_seconds=60):
         else:
             row.last_active = now
 
+        _touch_daily(user_id, app, now)
         db.session.commit()
         return True
 
@@ -57,6 +58,24 @@ def touch_user_activity(user_id, app, throttle_seconds=60):
         db.session.rollback()
         get_logger().warning("touch_user_activity failed", exc_info=True)
         return False
+
+
+def _touch_daily(user_id, app, now):
+    """Строка активности за сегодняшний день: создать или увеличить счётчик.
+    Вызывается из touch_user_activity, то есть не чаще раза в минуту."""
+    day = now.date()
+    daily = (
+        db.session.query(UserAppDailyActivity)
+        .filter_by(user_id=user_id, app=app, day=day)
+        .one_or_none()
+    )
+    if daily is None:
+        db.session.add(UserAppDailyActivity(
+            user_id=user_id, app=app, day=day, ticks=1, first_at=now, last_at=now,
+        ))
+    else:
+        daily.ticks = (daily.ticks or 0) + 1
+        daily.last_at = now
 
 
 def get_app_last_active(user_id, app):
