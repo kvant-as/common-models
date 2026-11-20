@@ -210,3 +210,11 @@ def apply_to_organization(org, data):
 
     org.egr_checked_at = current_utc_time()
     return changes
+
+def refresh_organization(org):
+    """Обновляет уже существующую организацию из ЕГР по её УНП. Возвращает
+    список изменений [(поле, было, стало)]; EgrError — если УНП нет, ЕГР
+    недоступен или организация не найдена. Коммит — на вызывающем."""
+    if not org or not org.ynp:
+        raise EgrError('У организации не указан УНП — обновить данные из ЕГР нельзя')
+    return apply_to_organization(org, fetch_organization(org.ynp))

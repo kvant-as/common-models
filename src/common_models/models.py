@@ -811,6 +811,9 @@ class ChatMessage(db.Model):
     is_user = db.Column(db.Boolean, nullable=False, default=True)
     content = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=current_utc_time)
+    # Прочитано ли сообщение пользователя администратором (обращения
+    # «Другое»): отмечается при открытии переписки в админке.
+    is_read = db.Column(db.Boolean, nullable=False, default=False, server_default='false')
     chat = db.relationship('Chat', foreign_keys=[chat_id], back_populates='messages')
     
     def __repr__(self):
